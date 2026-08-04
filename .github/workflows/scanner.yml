@@ -1,1 +1,87 @@
+name: AI Infrastructure Scanner
 
+on:
+  # Permite executar manualmente pela aba Actions
+  workflow_dispatch:
+
+  # Executa de segunda a sexta às 20h30 de Brasília
+  # O cron do GitHub usa UTC: 23h30 UTC = 20h30 BRT
+  schedule:
+    - cron: "30 23 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  run-scanner:
+    name: Executar Scanner
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ------------------------------------------------------
+      # 1. BAIXAR O REPOSITÓRIO
+      # ------------------------------------------------------
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------
+      # 2. CONFIGURAR PYTHON
+      # ------------------------------------------------------
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # ------------------------------------------------------
+      # 3. INSTALAR DEPENDÊNCIAS
+      # ------------------------------------------------------
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ------------------------------------------------------
+      # 4. CRIAR PASTA DE RESULTADOS
+      # ------------------------------------------------------
+      - name: Preparar pasta data
+        run: |
+          mkdir -p data
+
+      # ------------------------------------------------------
+      # 5. VERIFICAR SINTAXE DOS ARQUIVOS
+      # ------------------------------------------------------
+      - name: Verificar código Python
+        run: |
+          python -m compileall config engine main.py app.py
+
+      # ------------------------------------------------------
+      # 6. EXECUTAR O SCANNER
+      # ------------------------------------------------------
+      - name: Executar scanner
+        run: |
+          python main.py
+
+      # ------------------------------------------------------
+      # 7. MOSTRAR ARQUIVOS GERADOS
+      # ------------------------------------------------------
+      - name: Listar resultados
+        if: always()
+        run: |
+          echo "Arquivos encontrados:"
+          find data -maxdepth 2 -type f -print || true
+
+      # ------------------------------------------------------
+      # 8. DISPONIBILIZAR OS RESULTADOS PARA DOWNLOAD
+      # ------------------------------------------------------
+      - name: Publicar resultados
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-infrastructure-scanner-results
+          path: |
+            data/*.csv
+            data/*.xlsx
+          if-no-files-found: error
+          retention-days: 30
