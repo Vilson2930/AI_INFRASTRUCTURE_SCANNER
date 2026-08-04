@@ -5,8 +5,9 @@
 # Motor de decisão do scanner.
 #
 # Objetivo:
-# Combinar o Institutional Score e o Technical Entry Score
-# para produzir uma decisão prática de swing trade.
+# Combinar Institutional Score, Technical Entry Score
+# e Entry Timing Score para produzir uma decisão prática
+# de swing trade sem perseguir ações excessivamente esticadas.
 #
 # Saídas principais:
 # - final_score
@@ -56,6 +57,11 @@ MINIMUM_TECHNICAL_COLUMNS = {
     "technical_entry_approved",
     "technical_classification",
     "technical_diagnosis",
+    "entry_timing_score",
+    "timing_status",
+    "timing_approved",
+    "pullback_probability",
+    "parabolic_risk",
 }
 
 MINIMUM_INSTITUTIONAL_COLUMNS = {
@@ -306,7 +312,15 @@ def calculate_combined_score(
     row: pd.Series,
 ) -> float:
     """
-    Combina Institutional Score e Technical Entry Score.
+    Combina os três motores.
+
+    Pesos:
+    - 37,5% Institutional Score
+    - 37,5% Technical Entry Score
+    - 25,0% Entry Timing Score
+
+    Os pesos institucional e técnico preservam a proporção
+    configurada em settings.py.
     """
 
     institutional_score = row.get(
@@ -319,53 +333,77 @@ def calculate_combined_score(
         np.nan,
     )
 
-    total_weight = (
+    timing_score = row.get(
+        "entry_timing_score",
+        np.nan,
+    )
+
+    base_weight_total = (
         WEIGHT_INSTITUTIONAL
         +
         WEIGHT_TECHNICAL
     )
 
-    if total_weight <= 0:
+    if base_weight_total <= 0:
         raise ValueError(
-            "A soma dos pesos do ranking final "
+            "A soma dos pesos institucional e técnico "
             "deve ser maior que zero."
         )
 
-    available_scores = []
-    available_weights = []
-
-    if is_valid_number(
-        institutional_score
-    ):
-        available_scores.append(
-            float(institutional_score)
-        )
-
-        available_weights.append(
-            float(WEIGHT_INSTITUTIONAL)
-        )
-
-    if is_valid_number(
-        technical_score
-    ):
-        available_scores.append(
-            float(technical_score)
-        )
-
-        available_weights.append(
-            float(WEIGHT_TECHNICAL)
-        )
-
-    if not available_scores:
-        return 0.0
-
-    final_score = np.average(
-        available_scores,
-        weights=available_weights,
+    institutional_weight = (
+        float(WEIGHT_INSTITUTIONAL)
+        /
+        base_weight_total
+        *
+        0.75
     )
 
+    technical_weight = (
+        float(WEIGHT_TECHNICAL)
+        /
+        base_weight_total
+        *
+        0.75
+    )
+
+    timing_weight = 0.25
+
+    values = []
+    weights = []
+
+    for value, weight in [
+        (
+            institutional_score,
+            institutional_weight,
+        ),
+        (
+            technical_score,
+            technical_weight,
+        ),
+        (
+            timing_score,
+            timing_weight,
+        ),
+    ]:
+
+        if is_valid_number(
+            value
+        ):
+            values.append(
+                float(value)
+            )
+            weights.append(
+                float(weight)
+            )
+
+    if not values:
+        return 0.0
+
     return clip_score(
-        final_score
+        np.average(
+            values,
+            weights=weights,
+        )
     )
 
 
@@ -377,46 +415,50 @@ def calculate_confluence_score(
     row: pd.Series,
 ) -> float:
     """
-    Mede o grau de concordância entre os motores.
+    Mede a concordância entre Institutional, Technical e Timing.
 
-    Quanto mais próximos os dois scores, maior a confluência.
+    Quanto menor a dispersão entre os três scores,
+    maior a confluência.
     """
 
-    institutional_score = row.get(
-        "institutional_score",
-        np.nan,
-    )
+    scores = [
+        row.get(
+            "institutional_score",
+            np.nan,
+        ),
+        row.get(
+            "technical_entry_score",
+            np.nan,
+        ),
+        row.get(
+            "entry_timing_score",
+            np.nan,
+        ),
+    ]
 
-    technical_score = row.get(
-        "technical_entry_score",
-        np.nan,
-    )
+    valid_scores = [
+        float(score)
+        for score in scores
+        if is_valid_number(
+            score
+        )
+    ]
 
-    if not (
-        is_valid_number(
-            institutional_score
-        )
-        and
-        is_valid_number(
-            technical_score
-        )
-    ):
+    if len(
+        valid_scores
+    ) < 2:
         return 0.0
 
-    difference = abs(
-        float(institutional_score)
-        -
-        float(technical_score)
-    )
-
-    confluence = (
-        100
-        -
-        difference
+    dispersion = float(
+        np.std(
+            valid_scores
+        )
     )
 
     return clip_score(
-        confluence
+        100
+        -
+        dispersion * 3
     )
 
 
@@ -424,44 +466,55 @@ def calculate_signal_strength(
     row: pd.Series,
 ) -> float:
     """
-    Combina a nota final com a confluência dos motores.
+    Combina nota final, confluência e timing operacional.
     """
 
-    final_score = row.get(
-        "final_score",
-        0,
-    )
-
-    confluence_score = row.get(
-        "confluence_score",
-        0,
-    )
-
-    institutional_approved = boolean_value(
+    final_score = float(
         row.get(
-            "institutional_flow_approved",
-            False,
+            "final_score",
+            0,
         )
     )
 
-    technical_approved = boolean_value(
+    confluence_score = float(
         row.get(
-            "technical_entry_approved",
-            False,
+            "confluence_score",
+            0,
+        )
+    )
+
+    timing_score = float(
+        row.get(
+            "entry_timing_score",
+            0,
         )
     )
 
     score = (
-        float(final_score) * 0.80
+        final_score * 0.65
         +
-        float(confluence_score) * 0.20
+        confluence_score * 0.20
+        +
+        timing_score * 0.15
     )
 
     if (
-        institutional_approved
-        and technical_approved
+        institutional_condition(
+            row
+        )
+        and technical_condition(
+            row
+        )
+        and timing_condition(
+            row
+        )
     ):
         score += 5
+
+    if timing_veto(
+        row
+    ):
+        score -= 20
 
     return clip_score(
         score
@@ -523,6 +576,117 @@ def technical_condition(
         and float(score)
         >= MIN_TECHNICAL_SCORE
         and approved
+    )
+
+
+def timing_condition(
+    row: pd.Series,
+) -> bool:
+    """
+    Verifica se o Entry Timing Engine aprovou a entrada.
+    """
+
+    score = row.get(
+        "entry_timing_score",
+        np.nan,
+    )
+
+    approved = boolean_value(
+        row.get(
+            "timing_approved",
+            False,
+        )
+    )
+
+    status = str(
+        row.get(
+            "timing_status",
+            "",
+        )
+    ).upper()
+
+    return bool(
+        is_valid_number(
+            score
+        )
+        and float(
+            score
+        ) >= 70
+        and approved
+        and status == "ENTRAR AGORA"
+    )
+
+
+def timing_veto(
+    row: pd.Series,
+) -> bool:
+    """
+    Bloqueia entradas esticadas, parabólicas ou com pullback provável.
+    """
+
+    timing_status = str(
+        row.get(
+            "timing_status",
+            "",
+        )
+    ).upper()
+
+    parabolic_risk = str(
+        row.get(
+            "parabolic_risk",
+            "",
+        )
+    ).upper()
+
+    pullback_probability = row.get(
+        "pullback_probability",
+        np.nan,
+    )
+
+    weekly_extension = boolean_value(
+        row.get(
+            "weekly_extension_risk",
+            False,
+        )
+    )
+
+    parabolic_move = boolean_value(
+        row.get(
+            "parabolic_move_risk",
+            False,
+        )
+    )
+
+    pullback_required = boolean_value(
+        row.get(
+            "pullback_required",
+            False,
+        )
+    )
+
+    blocked_status = {
+        "AGUARDAR PULLBACK",
+        "MUITO ESTICADA",
+        "ALTO RISCO",
+    }
+
+    return bool(
+        timing_status in blocked_status
+        or parabolic_risk in {
+            "ALTO",
+            "EXTREMO",
+        }
+        or (
+            is_valid_number(
+                pullback_probability
+            )
+            and float(
+                pullback_probability
+            ) >= 65
+        )
+        or weekly_extension
+        or parabolic_move
+        or pullback_required
     )
 
 
@@ -625,10 +789,15 @@ def risk_condition(
         ) <= 10
     )
 
+    timing_ok = not timing_veto(
+        row
+    )
+
     return bool(
         risk_confirmed
         and penalty_ok
         and atr_ok
+        and timing_ok
     )
 
 
@@ -636,10 +805,9 @@ def calculate_entry_probability(
     row: pd.Series,
 ) -> float:
     """
-    Estima a probabilidade operacional da entrada.
+    Estima probabilidade operacional considerando os três motores.
 
-    Trata-se de uma estimativa heurística de confluência,
-    não de uma probabilidade estatística calibrada por backtest.
+    É uma estimativa heurística até existir calibração por backtest.
     """
 
     final_score = float(
@@ -656,6 +824,20 @@ def calculate_entry_probability(
         )
     )
 
+    timing_score = float(
+        row.get(
+            "entry_timing_score",
+            0,
+        )
+    )
+
+    timing_confidence = float(
+        row.get(
+            "timing_confidence",
+            0,
+        )
+    )
+
     confirmations = int(
         row.get(
             "confirmation_count",
@@ -663,45 +845,37 @@ def calculate_entry_probability(
         )
     )
 
-    institutional_ok = institutional_condition(
-        row
-    )
-
-    technical_score_ok = (
-        is_valid_number(
-            row.get(
-                "technical_entry_score"
-            )
-        )
-        and float(
-            row.get(
-                "technical_entry_score"
-            )
-        ) >= MIN_TECHNICAL_SCORE
-    )
-
-    risk_ok = risk_condition(
-        row
-    )
-
     probability = (
-        final_score * 0.55
+        final_score * 0.40
         +
-        confluence_score * 0.20
+        confluence_score * 0.15
         +
-        confirmations / 3 * 15
+        timing_score * 0.25
+        +
+        timing_confidence * 0.10
+        +
+        confirmations / 3 * 10
     )
 
-    if institutional_ok:
+    if institutional_condition(
+        row
+    ):
+        probability += 3
+
+    if technical_condition(
+        row
+    ):
+        probability += 3
+
+    if timing_condition(
+        row
+    ):
         probability += 4
 
-    if technical_score_ok:
-        probability += 4
-
-    if risk_ok:
-        probability += 2
-    else:
-        probability -= 10
+    if timing_veto(
+        row
+    ):
+        probability -= 25
 
     return round(
         clip_score(
@@ -875,44 +1049,16 @@ def calculate_signal_approval(
     row: pd.Series,
 ) -> bool:
     """
-    Aprovação final por confluência.
+    Aprovação final com três motores e veto de extensão.
 
-    Regras:
-    - Institutional Score mínimo;
-    - Technical Score mínimo;
-    - Final Score mínimo;
-    - risco aceitável;
-    - pelo menos 2 de 3 confirmações independentes.
-
-    A entrada técnica aprovada pelo motor técnico conta como
-    confirmação forte, mas não é mais o único caminho possível.
+    A ação somente é aprovada quando:
+    - fluxo institucional é suficiente;
+    - análise técnica é suficiente;
+    - timing está aprovado como ENTRAR AGORA;
+    - Final Score supera o mínimo;
+    - risco é aceitável;
+    - não existe veto de extensão/pullback.
     """
-
-    institutional_ok = institutional_condition(
-        row
-    )
-
-    technical_score = row.get(
-        "technical_entry_score",
-        np.nan,
-    )
-
-    technical_score_ok = bool(
-        is_valid_number(
-            technical_score
-        )
-        and float(
-            technical_score
-        ) >= MIN_TECHNICAL_SCORE
-    )
-
-    final_ok = final_score_condition(
-        row
-    )
-
-    risk_ok = risk_condition(
-        row
-    )
 
     confirmations = count_market_confirmations(
         row
@@ -931,11 +1077,25 @@ def calculate_signal_approval(
     )
 
     return bool(
-        institutional_ok
-        and technical_score_ok
-        and final_ok
-        and risk_ok
+        institutional_condition(
+            row
+        )
+        and technical_condition(
+            row
+        )
+        and timing_condition(
+            row
+        )
+        and final_score_condition(
+            row
+        )
+        and risk_condition(
+            row
+        )
         and confirmation_ok
+        and not timing_veto(
+            row
+        )
     )
 
 
@@ -947,7 +1107,7 @@ def define_signal_status(
     row: pd.Series,
 ) -> str:
     """
-    Define o status operacional por faixas de confluência.
+    Define o status operacional incluindo timing.
     """
 
     institutional_score = float(
@@ -971,64 +1131,46 @@ def define_signal_status(
         )
     )
 
-    confirmations = int(
+    timing_status = str(
         row.get(
-            "confirmation_count",
-            0,
+            "timing_status",
+            "",
         )
-    )
-
-    probability = float(
-        row.get(
-            "entry_probability",
-            0,
-        )
-    )
-
-    signal_approved = boolean_value(
-        row.get(
-            "signal_approved",
-            False,
-        )
-    )
+    ).upper()
 
     institutional_ok = institutional_condition(
         row
     )
 
-    risk_ok = risk_condition(
-        row
-    )
-
-    technical_diagnosis = str(
+    if boolean_value(
         row.get(
-            "technical_diagnosis",
-            "",
+            "signal_approved",
+            False,
         )
-    ).upper()
-
-    if signal_approved:
+    ):
         return "ENTRADA APROVADA"
 
-    if (
-        institutional_ok
-        and technical_score >= MIN_TECHNICAL_SCORE
-        and final_score >= 68
-        and risk_ok
-        and confirmations >= 1
-    ):
-        return "PRÉ-ENTRADA — AGUARDAR GATILHO"
+    if timing_status == "MUITO ESTICADA":
+        return "MUITO ESTICADA — NÃO PERSEGUIR"
 
     if (
-        institutional_ok
-        and (
-            "REVERSÃO EM FORMAÇÃO"
-            in technical_diagnosis
-            or "AGUARDAR GATILHO"
-            in technical_diagnosis
+        timing_status == "AGUARDAR PULLBACK"
+        or timing_veto(
+            row
         )
     ):
-        return "AGUARDAR GATILHO"
+        return "AGUARDAR PULLBACK"
+
+    if timing_status == "AGUARDAR ROMPIMENTO":
+        return "AGUARDAR ROMPIMENTO"
+
+    if (
+        timing_status == "PRÉ-ENTRADA"
+        and institutional_ok
+        and technical_score >= MIN_TECHNICAL_SCORE
+        and final_score >= 68
+    ):
+        return "PRÉ-ENTRADA — AGUARDAR GATILHO"
 
     if (
         technical_score >= MIN_TECHNICAL_SCORE
@@ -1036,18 +1178,11 @@ def define_signal_status(
     ):
         return "TÉCNICA BOA — FLUXO INSUFICIENTE"
 
-    if (
-        final_score >= 65
-        or probability >= 65
-    ):
+    if final_score >= 65:
         return "OBSERVAÇÃO PRIORITÁRIA"
 
-    if (
-        not risk_ok
-        or (
-            institutional_score < 45
-            and technical_score < 45
-        )
+    if not risk_condition(
+        row
     ):
         return "NÃO COMPRAR"
 
@@ -1259,6 +1394,29 @@ def list_signal_positive_factors(
             "volume confirmado"
         )
 
+    if timing_condition(
+        row
+    ):
+        factors.append(
+            "timing de entrada aprovado"
+        )
+
+    timing_positive = row.get(
+        "timing_positive_factors",
+        "",
+    )
+
+    if (
+        isinstance(
+            timing_positive,
+            str,
+        )
+        and timing_positive.strip()
+    ):
+        factors.append(
+            timing_positive.strip()
+        )
+
     return "; ".join(
         factors
     )
@@ -1355,6 +1513,29 @@ def list_signal_pending_conditions(
     ):
         pending.append(
             "Final Score abaixo do mínimo"
+        )
+
+    if not timing_condition(
+        row
+    ):
+        pending.append(
+            "timing de entrada não aprovado"
+        )
+
+    timing_pending = row.get(
+        "timing_pending_conditions",
+        "",
+    )
+
+    if (
+        isinstance(
+            timing_pending,
+            str,
+        )
+        and timing_pending.strip()
+    ):
+        pending.append(
+            timing_pending.strip()
         )
 
     technical_pending = row.get(
@@ -1457,6 +1638,29 @@ def list_rejection_reasons(
             technical_penalty_reasons.strip()
         )
 
+    timing_rejection = row.get(
+        "timing_rejection_reasons",
+        "",
+    )
+
+    if (
+        isinstance(
+            timing_rejection,
+            str,
+        )
+        and timing_rejection.strip()
+    ):
+        reasons.append(
+            timing_rejection.strip()
+        )
+
+    if timing_veto(
+        row
+    ):
+        reasons.append(
+            "timing bloqueado por extensão ou risco de pullback"
+        )
+
     return "; ".join(
         dict.fromkeys(
             reasons
@@ -1508,6 +1712,23 @@ def generate_executive_decision(
             f"{ticker}: confluência elevada, mas ainda falta "
             f"um gatilho complementar. Nota final "
             f"{float(final_score):.2f}."
+        )
+
+    if status == "AGUARDAR PULLBACK":
+        return (
+            f"{ticker}: empresa qualificada, porém o preço está "
+            f"esticado. Aguardar correção ou consolidação."
+        )
+
+    if status == "MUITO ESTICADA — NÃO PERSEGUIR":
+        return (
+            f"{ticker}: movimento recente excessivo; "
+            f"não perseguir o preço."
+        )
+
+    if status == "AGUARDAR ROMPIMENTO":
+        return (
+            f"{ticker}: aguardar rompimento confirmado com volume."
         )
 
     if status == "TÉCNICA BOA — FLUXO INSUFICIENTE":
@@ -1567,7 +1788,8 @@ class SignalEngine:
             Resultado produzido por institutional_score.py.
 
         technical_data:
-            Resultado produzido por technical_score.py.
+            Resultado de technical_score.py já integrado com
+            entry_timing_engine.py pelo main.py.
 
         save:
             Quando True, salva data/signals.csv.
@@ -1716,6 +1938,20 @@ class SignalEngine:
         )
 
         result[
+            "timing_condition_approved"
+        ] = result.apply(
+            timing_condition,
+            axis=1,
+        )
+
+        result[
+            "timing_veto"
+        ] = result.apply(
+            timing_veto,
+            axis=1,
+        )
+
+        result[
             "signal_approved"
         ] = result.apply(
             calculate_signal_approval,
@@ -1795,11 +2031,13 @@ class SignalEngine:
         status_order = {
             "ENTRADA APROVADA": 1,
             "PRÉ-ENTRADA — AGUARDAR GATILHO": 2,
-            "AGUARDAR GATILHO": 3,
-            "OBSERVAÇÃO PRIORITÁRIA": 4,
-            "TÉCNICA BOA — FLUXO INSUFICIENTE": 5,
-            "OBSERVAÇÃO": 6,
-            "NÃO COMPRAR": 7,
+            "AGUARDAR PULLBACK": 3,
+            "AGUARDAR ROMPIMENTO": 4,
+            "OBSERVAÇÃO PRIORITÁRIA": 5,
+            "TÉCNICA BOA — FLUXO INSUFICIENTE": 6,
+            "OBSERVAÇÃO": 7,
+            "NÃO COMPRAR": 8,
+            "MUITO ESTICADA — NÃO PERSEGUIR": 9,
         }
 
         result[
@@ -1824,12 +2062,14 @@ class SignalEngine:
                     "signal_status_order",
                     "signal_strength_score",
                     "final_score",
+                    "entry_timing_score",
                     "institutional_score",
                     "technical_entry_score",
                 ],
                 ascending=[
                     False,
                     True,
+                    False,
                     False,
                     False,
                     False,
@@ -1915,8 +2155,10 @@ class SignalEngine:
 
         watch_status = {
             "PRÉ-ENTRADA — AGUARDAR GATILHO",
-            "AGUARDAR GATILHO",
+            "AGUARDAR PULLBACK",
+            "AGUARDAR ROMPIMENTO",
             "OBSERVAÇÃO PRIORITÁRIA",
+            "MUITO ESTICADA — NÃO PERSEGUIR",
         }
 
         return (
@@ -2003,6 +2245,11 @@ class SignalEngine:
                 "risk_reward_ratio",
                 "institutional_score",
                 "technical_entry_score",
+                "entry_timing_score",
+                "timing_status",
+                "timing_approved",
+                "pullback_probability",
+                "parabolic_risk",
                 "institutional_classification",
                 "technical_classification",
                 "executive_decision",
@@ -2065,6 +2312,11 @@ if __name__ == "__main__":
         / "technical_score.csv"
     )
 
+    timing_file = (
+        Path(DATA_PATH)
+        / "entry_timing_score.csv"
+    )
+
     if not institutional_file.exists():
         raise FileNotFoundError(
             "institutional_score.csv não foi encontrado. "
@@ -2077,12 +2329,54 @@ if __name__ == "__main__":
             "Execute primeiro technical_score.py."
         )
 
+    if not timing_file.exists():
+        raise FileNotFoundError(
+            "entry_timing_score.csv não foi encontrado. "
+            "Execute primeiro entry_timing_engine.py."
+        )
+
     institutional_data = pd.read_csv(
         institutional_file
     )
 
     technical_data = pd.read_csv(
         technical_file
+    )
+
+    timing_data = pd.read_csv(
+        timing_file
+    )
+
+    timing_columns = [
+        "ticker",
+        "entry_timing_score",
+        "timing_status",
+        "timing_approved",
+        "pullback_probability",
+        "parabolic_risk",
+        "timing_confidence",
+        "timing_confirmations",
+        "timing_positive_factors",
+        "timing_pending_conditions",
+        "timing_rejection_reasons",
+        "weekly_extension_risk",
+        "parabolic_move_risk",
+        "pullback_required",
+    ]
+
+    available_timing_columns = [
+        column
+        for column in timing_columns
+        if column in timing_data.columns
+    ]
+
+    technical_data = technical_data.merge(
+        timing_data[
+            available_timing_columns
+        ],
+        on="ticker",
+        how="left",
+        validate="one_to_one",
     )
 
     signal_engine = SignalEngine()
