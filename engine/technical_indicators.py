@@ -16,8 +16,10 @@
 # - VWAP móvel de 20 dias
 # - Volume relativo
 # - Máxima e mínima de 52 semanas
-# - Retornos de 1, 3, 6 e 12 meses
-# - Distâncias das médias e da máxima anual
+# - Retornos de 5, 10, 21, 63, 126 e 252 pregões
+# - Distâncias das médias e das máximas de 20 e 52 semanas
+# - Extensão de curto prazo e risco de movimento parabólico
+# - Volume relativo de 5 e 20 pregões
 # ============================================================
 
 from __future__ import annotations
@@ -53,6 +55,8 @@ warnings.filterwarnings("ignore")
 # CONSTANTES
 # ============================================================
 
+TRADING_DAYS_1_WEEK = 5
+TRADING_DAYS_2_WEEKS = 10
 TRADING_DAYS_1_MONTH = 21
 TRADING_DAYS_3_MONTHS = 63
 TRADING_DAYS_6_MONTHS = 126
@@ -664,6 +668,10 @@ def calculate_ticker_indicators(
     # MÉDIAS MÓVEIS
     # --------------------------------------------------------
 
+    df["sma_10"] = close.rolling(
+        10
+    ).mean()
+
     df["sma_20"] = close.rolling(
         SMA_SHORT
     ).mean()
@@ -697,6 +705,14 @@ def calculate_ticker_indicators(
     # --------------------------------------------------------
     # DISTÂNCIA DAS MÉDIAS
     # --------------------------------------------------------
+
+    df["distance_sma_10"] = (
+        close / df["sma_10"] - 1
+    ) * 100
+
+    df["distancia_sma_10"] = (
+        df["distance_sma_10"]
+    )
 
     df["distance_sma_20"] = (
         close / df["sma_20"] - 1
@@ -823,6 +839,38 @@ def calculate_ticker_indicators(
         df["relative_volume_20d"]
     )
 
+    df["volume_average_5d"] = (
+        volume.rolling(
+            5
+        ).mean()
+    )
+
+    df["relative_volume_5d"] = (
+        safe_divide(
+            df["volume_average_5d"],
+            df["volume_average_20d"],
+        )
+    )
+
+    df["volume_relativo_5d"] = (
+        df["relative_volume_5d"]
+    )
+
+    volume_std_20d = (
+        volume.rolling(
+            20
+        ).std()
+    )
+
+    df["volume_zscore_20d"] = (
+        safe_divide(
+            volume
+            -
+            df["volume_average_20d"],
+            volume_std_20d,
+        )
+    )
+
     df["average_dollar_volume_20d"] = (
         (
             close * volume
@@ -889,6 +937,29 @@ def calculate_ticker_indicators(
     )
 
     # --------------------------------------------------------
+    # MÁXIMA DE 20 PREGÕES
+    # --------------------------------------------------------
+
+    df["high_20d"] = (
+        high.rolling(
+            20,
+            min_periods=10,
+        ).max()
+    )
+
+    df["distance_from_20d_high"] = (
+        close
+        /
+        df["high_20d"]
+        -
+        1
+    ) * 100
+
+    df["distancia_maxima_20d"] = (
+        df["distance_from_20d_high"]
+    )
+
+    # --------------------------------------------------------
     # MÁXIMA E MÍNIMA DE 52 SEMANAS
     # --------------------------------------------------------
 
@@ -943,6 +1014,48 @@ def calculate_ticker_indicators(
     # RETORNOS
     # --------------------------------------------------------
 
+    df["return_5d"] = (
+        close.pct_change(
+            TRADING_DAYS_1_WEEK,
+            fill_method=None,
+        )
+        * 100
+    )
+
+    df["return_10d"] = (
+        close.pct_change(
+            TRADING_DAYS_2_WEEKS,
+            fill_method=None,
+        )
+        * 100
+    )
+
+    df["retorno_5d"] = (
+        df["return_5d"]
+    )
+
+    df["retorno_10d"] = (
+        df["return_10d"]
+    )
+
+    df["gap_1d"] = (
+        safe_divide(
+            df["open"],
+            close.shift(1),
+        )
+        -
+        1
+    ) * 100
+
+    df["gap_5d"] = (
+        df["gap_1d"]
+        .rolling(
+            5,
+            min_periods=1,
+        )
+        .sum()
+    )
+
     df["return_1m"] = (
         close.pct_change(
             TRADING_DAYS_1_MONTH,
@@ -989,6 +1102,132 @@ def calculate_ticker_indicators(
 
     df["retorno_12m"] = (
         df["return_12m"]
+    )
+
+    # --------------------------------------------------------
+    # EXTENSÃO DE CURTO PRAZO
+    # --------------------------------------------------------
+
+    df["weekly_extension_risk"] = (
+        (
+            df["return_5d"]
+            >=
+            20
+        )
+        |
+        (
+            (
+                df["return_5d"]
+                >=
+                15
+            )
+            &
+            (
+                df["rsi_14"]
+                >=
+                72
+            )
+        )
+        |
+        (
+            df["distance_sma_20"]
+            >=
+            12
+        )
+    )
+
+    df["parabolic_move_risk"] = (
+        (
+            df["return_5d"]
+            >=
+            30
+        )
+        |
+        (
+            df["return_10d"]
+            >=
+            35
+        )
+        |
+        (
+            (
+                df["rsi_14"]
+                >=
+                78
+            )
+            &
+            (
+                df["distance_sma_20"]
+                >=
+                15
+            )
+        )
+    )
+
+    df["pullback_required"] = (
+        df["weekly_extension_risk"]
+        |
+        df["parabolic_move_risk"]
+    )
+
+    df["extension_score"] = 100.0
+
+    df.loc[
+        df["return_5d"]
+        >=
+        15,
+        "extension_score",
+    ] -= 20
+
+    df.loc[
+        df["return_5d"]
+        >=
+        20,
+        "extension_score",
+    ] -= 20
+
+    df.loc[
+        df["return_5d"]
+        >=
+        30,
+        "extension_score",
+    ] -= 25
+
+    df.loc[
+        df["return_10d"]
+        >=
+        35,
+        "extension_score",
+    ] -= 20
+
+    df.loc[
+        df["distance_sma_20"]
+        >=
+        12,
+        "extension_score",
+    ] -= 20
+
+    df.loc[
+        (
+            df["rsi_14"]
+            >=
+            72
+        )
+        &
+        (
+            df["return_5d"]
+            >=
+            15
+        ),
+        "extension_score",
+    ] -= 15
+
+    df["extension_score"] = (
+        df["extension_score"]
+        .clip(
+            lower=0,
+            upper=100,
+        )
     )
 
     # --------------------------------------------------------
@@ -1059,11 +1298,17 @@ def calculate_ticker_indicators(
         "adx_14",
         "atr_14",
         "mfi_14",
+        "sma_10",
         "sma_20",
         "sma_50",
         "sma_200",
+        "retorno_5d",
+        "retorno_10d",
+        "volume_relativo_5d",
         "volume_relativo_20d",
+        "distancia_maxima_20d",
         "distancia_maxima_52s",
+        "extension_score",
     ]
 
     df["indicators_complete"] = (
@@ -1358,8 +1603,17 @@ if __name__ == "__main__":
         "adx_14",
         "mfi_14",
         "atr_percentual",
+        "retorno_5d",
+        "retorno_10d",
+        "distancia_sma_20",
+        "distancia_maxima_20d",
         "distancia_maxima_52s",
+        "volume_relativo_5d",
         "volume_relativo_20d",
+        "weekly_extension_risk",
+        "parabolic_move_risk",
+        "pullback_required",
+        "extension_score",
         "indicadores_completos",
     ]
 
