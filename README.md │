@@ -1,1 +1,438 @@
+# 🤖 AI INFRASTRUCTURE SCANNER
 
+Scanner quantitativo para identificar as **melhores oportunidades de swing trade (até 6 meses)** nas principais empresas globais de **infraestrutura para Inteligência Artificial**.
+
+O projeto combina **análise fundamentalista institucional** com **análise técnica**, produzindo um ranking objetivo baseado em entrada de capital, crescimento e ponto de entrada.
+
+---
+
+# Objetivo
+
+Encontrar empresas que apresentem simultaneamente:
+
+- Entrada de dinheiro institucional
+- Forte crescimento
+- Liderança no setor
+- Tendência saudável
+- Boa oportunidade técnica
+- Desconto em relação ao movimento recente
+- Liquidez suficiente para investidores institucionais
+
+O objetivo **não é prever o mercado**, mas selecionar ativos com maior probabilidade estatística de performar bem durante os próximos meses.
+
+---
+
+# Universo analisado
+
+O scanner acompanha exclusivamente empresas ligadas à infraestrutura da IA.
+
+## Semicondutores
+
+- NVIDIA
+- AMD
+- Broadcom
+- Marvell
+- TSMC
+- Intel
+- GlobalFoundries
+
+---
+
+## Equipamentos para semicondutores
+
+- ASML
+- Applied Materials
+- Lam Research
+- KLA
+
+---
+
+## Memórias
+
+- Micron
+- Western Digital
+- Seagate
+
+---
+
+## Servidores
+
+- Dell
+- HPE
+- Super Micro
+
+---
+
+## Cloud
+
+- Microsoft
+- Amazon
+- Google
+- Oracle
+
+---
+
+## Data Centers
+
+- Vertiv
+- Eaton
+- Johnson Controls
+- Trane
+- Digital Realty
+- Equinix
+
+---
+
+## Redes
+
+- Cisco
+- Arista
+- Ciena
+
+---
+
+## Fibra Óptica
+
+- Lumentum
+- Coherent
+- Fabrinet
+
+---
+
+## Energia
+
+- Constellation Energy
+- Vistra
+- GE Vernova
+- Hubbell
+- Quanta
+- Emerson
+- NRG
+- Talen
+
+---
+
+## Software IA
+
+- Palantir
+- Datadog
+- Snowflake
+- ServiceNow
+
+---
+
+## Cibersegurança
+
+- Palo Alto
+- CrowdStrike
+- Fortinet
+- Zscaler
+
+---
+
+# Metodologia
+
+O scanner possui dois motores independentes.
+
+## 1. Institutional Score
+
+Mede a qualidade fundamentalista.
+
+São avaliados:
+
+- crescimento
+- fluxo institucional
+- liderança
+- força do setor
+- liquidez
+- desconto
+- qualidade operacional
+
+Resultado:
+
+```
+Institutional Score
+0 até 100
+```
+
+---
+
+## 2. Technical Entry Score
+
+Avalia apenas o momento de entrada.
+
+São utilizados indicadores clássicos.
+
+Entre eles:
+
+- RSI
+- MACD
+- ADX
+- ATR
+- MFI
+- SMA20
+- SMA50
+- SMA200
+- Distância da máxima de 52 semanas
+- Tendência
+- Volume
+
+Resultado:
+
+```
+Technical Entry Score
+0 até 100
+```
+
+---
+
+## 3. Signal Engine
+
+Une os dois motores.
+
+Somente ações aprovadas pelos dois filtros recebem:
+
+```
+ENTRADA APROVADA
+```
+
+Caso contrário recebem:
+
+- Aguardar gatilho
+- Watchlist
+- Observação
+- Não comprar
+
+---
+
+## 4. Ranking Engine
+
+Produz:
+
+- ranking geral
+- melhor ação de cada setor
+- watchlist
+- entradas aprovadas
+
+---
+
+# Estrutura do projeto
+
+```
+AI_INFRASTRUCTURE_SCANNER
+
+app.py
+main.py
+requirements.txt
+README.md
+
+config/
+    settings.py
+    universe.py
+
+engine/
+    market_data.py
+    technical_indicators.py
+    institutional_score.py
+    technical_score.py
+    signal_engine.py
+    ranking_engine.py
+    report.py
+
+data/
+```
+
+---
+
+# Fluxo
+
+```
+Yahoo Finance
+
+↓
+
+Histórico de preços
+
+↓
+
+Indicadores Técnicos
+
+↓
+
+Institutional Score
+
+↓
+
+Technical Entry Score
+
+↓
+
+Signal Engine
+
+↓
+
+Ranking
+
+↓
+
+Relatório Excel
+
+↓
+
+Dashboard Streamlit
+```
+
+---
+
+# Arquivos gerados
+
+```
+historico_precos.csv
+
+indicadores.csv
+
+institutional_score.csv
+
+technical_score.csv
+
+signals.csv
+
+ranking.csv
+
+entradas_aprovadas.csv
+
+watchlist.csv
+
+melhor_por_setor.csv
+
+relatorio.xlsx
+```
+
+---
+
+# Como executar
+
+Instale as bibliotecas
+
+```
+pip install -r requirements.txt
+```
+
+Execute
+
+```
+python main.py
+```
+
+ou utilize a interface gráfica
+
+```
+streamlit run app.py
+```
+
+---
+
+# Como interpretar
+
+## Institutional Score
+
+Avalia se existe fluxo institucional.
+
+Quanto maior, melhor.
+
+---
+
+## Technical Entry Score
+
+Avalia apenas o momento da compra.
+
+Quanto maior, melhor.
+
+---
+
+## Final Score
+
+Combinação dos dois motores.
+
+É a principal nota utilizada pelo ranking.
+
+---
+
+## Priority Score
+
+Refina a ordenação entre empresas semelhantes.
+
+---
+
+## Status possíveis
+
+```
+ENTRADA APROVADA
+```
+
+A empresa passou pelos filtros.
+
+---
+
+```
+AGUARDAR GATILHO
+```
+
+Empresa excelente.
+
+Ainda falta confirmação técnica.
+
+---
+
+```
+OBSERVAÇÃO
+```
+
+Ainda não reúne condições ideais.
+
+---
+
+```
+NÃO COMPRAR
+```
+
+Reprovada.
+
+---
+
+# Filosofia
+
+Este projeto segue quatro princípios:
+
+- nunca prever mercado;
+- nunca comprar apenas porque caiu;
+- seguir fluxo institucional;
+- comprar somente quando fundamento e técnica concordam.
+
+---
+
+# Público-alvo
+
+O scanner foi desenvolvido para investidores que buscam operações de **swing trade entre 2 e 6 meses**, utilizando critérios quantitativos semelhantes aos empregados por gestores profissionais.
+
+---
+
+# Tecnologias
+
+- Python
+- Pandas
+- NumPy
+- yfinance
+- Plotly
+- Streamlit
+- XlsxWriter
+
+---
+
+# Aviso
+
+Este projeto possui finalidade educacional e de apoio à decisão.
+
+Os resultados apresentados **não constituem recomendação individual de investimento** e **não garantem retornos futuros**.
+
+Todo investimento envolve risco.
