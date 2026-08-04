@@ -150,7 +150,10 @@ def normalize_columns(
     data: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Padroniza nomes de colunas.
+    Padroniza nomes de colunas sem criar duplicidades.
+
+    Quando a coluna canônica já existe, ela é preservada e a
+    equivalente alternativa é removida.
     """
 
     df = data.copy()
@@ -164,6 +167,14 @@ def normalize_columns(
         for column in df.columns
     ]
 
+    # Remove duplicidades que já possam existir.
+    df = df.loc[
+        :,
+        ~df.columns.duplicated(
+            keep="last"
+        )
+    ].copy()
+
     aliases = {
         "segmento": "setor",
         "empresa": "company",
@@ -173,15 +184,34 @@ def normalize_columns(
         "entrada_aprovada": "signal_approved",
     }
 
-    return df.rename(
-        columns={
-            column: aliases.get(
-                column,
-                column,
+    for source_column, target_column in aliases.items():
+
+        if source_column not in df.columns:
+            continue
+
+        if target_column in df.columns:
+            df = df.drop(
+                columns=[
+                    source_column
+                ]
             )
-            for column in df.columns
-        }
-    )
+        else:
+            df = df.rename(
+                columns={
+                    source_column:
+                        target_column
+                }
+            )
+
+    # Proteção final contra nomes duplicados.
+    df = df.loc[
+        :,
+        ~df.columns.duplicated(
+            keep="last"
+        )
+    ].copy()
+
+    return df
 
 
 def prepare_dataframe(
@@ -647,8 +677,24 @@ def calculate_column_width(
             maximum_width,
         )
 
+    column_data = data.loc[
+        :,
+        column
+    ]
+
+    # Proteção adicional: se ainda houver duplicidade,
+    # utiliza apenas a última ocorrência.
+    if isinstance(
+        column_data,
+        pd.DataFrame,
+    ):
+        column_data = column_data.iloc[
+            :,
+            -1
+        ]
+
     values = (
-        data[column]
+        column_data
         .astype(str)
         .replace(
             {
