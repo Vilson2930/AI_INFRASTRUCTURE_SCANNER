@@ -9,9 +9,10 @@
 # 2. Indicadores técnicos
 # 3. Institutional Score
 # 4. Technical Entry Score
-# 5. Signal Engine
-# 6. Ranking final
-# 7. Relatório Excel
+# 5. Entry Timing Engine
+# 6. Signal Engine
+# 7. Ranking final
+# 8. Relatório Excel
 # ============================================================
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from engine.market_data import MarketData
 from engine.technical_indicators import TechnicalIndicators
 from engine.institutional_score import InstitutionalScore
 from engine.technical_score import TechnicalScore
+from engine.entry_timing_engine import EntryTimingEngine
 from engine.signal_engine import SignalEngine
 from engine.ranking_engine import RankingEngine
 from engine.report import ReportEngine
@@ -178,6 +180,10 @@ def show_top_ranking(
         "final_score",
         "institutional_score",
         "technical_entry_score",
+        "entry_timing_score",
+        "timing_status",
+        "pullback_probability",
+        "parabolic_risk",
         "executive_decision",
     ]
 
@@ -521,11 +527,101 @@ def run_scanner() -> dict[str, object]:
     )
 
     # --------------------------------------------------------
-    # 5. SIGNAL ENGINE
+    # 5. ENTRY TIMING ENGINE
     # --------------------------------------------------------
 
     print_stage(
         5,
+        "ENTRY TIMING — QUALIDADE DO PONTO DE ENTRADA",
+    )
+
+    timing_engine = (
+        EntryTimingEngine()
+    )
+
+    timing_ranking = (
+        timing_engine.calculate(
+            indicators=indicator_history,
+            save=SAVE_INTERMEDIATE_FILES,
+        )
+    )
+
+    validate_dataframe(
+        data=timing_ranking,
+        dataframe_name=(
+            "Ranking de timing"
+        ),
+    )
+
+    # --------------------------------------------------------
+    # INTEGRAÇÃO DO TIMING AO RANKING TÉCNICO
+    # --------------------------------------------------------
+
+    timing_columns = [
+        "ticker",
+        "entry_timing_score",
+        "timing_status",
+        "timing_approved",
+        "pullback_probability",
+        "parabolic_risk",
+        "timing_confidence",
+        "timing_confirmations",
+        "timing_positive_factors",
+        "timing_pending_conditions",
+        "timing_rejection_reasons",
+        "timing_decision",
+        "retorno_5d",
+        "retorno_10d",
+        "distancia_sma_10",
+        "distancia_maxima_20d",
+        "volume_relativo_5d",
+        "weekly_extension_risk",
+        "parabolic_move_risk",
+        "pullback_required",
+        "extension_score",
+    ]
+
+    available_timing_columns = [
+        column
+        for column in timing_columns
+        if column in timing_ranking.columns
+    ]
+
+    technical_with_timing = (
+        technical_ranking
+        .merge(
+            timing_ranking[
+                available_timing_columns
+            ],
+            on="ticker",
+            how="left",
+            validate="one_to_one",
+        )
+    )
+
+    technical_with_timing = (
+        technical_with_timing.loc[
+            :,
+            ~technical_with_timing.columns.duplicated(
+                keep="last"
+            )
+        ]
+        .copy()
+    )
+
+    validate_dataframe(
+        data=technical_with_timing,
+        dataframe_name=(
+            "Ranking técnico com timing"
+        ),
+    )
+
+    # --------------------------------------------------------
+    # 6. SIGNAL ENGINE
+    # --------------------------------------------------------
+
+    print_stage(
+        6,
         "COMBINAÇÃO DOS MOTORES E GERAÇÃO DE SINAIS",
     )
 
@@ -538,7 +634,7 @@ def run_scanner() -> dict[str, object]:
             institutional_ranking
         ),
         technical_data=(
-            technical_ranking
+            technical_with_timing
         ),
         save=SAVE_INTERMEDIATE_FILES,
     )
@@ -551,11 +647,11 @@ def run_scanner() -> dict[str, object]:
     )
 
     # --------------------------------------------------------
-    # 6. RANKING
+    # 7. RANKING
     # --------------------------------------------------------
 
     print_stage(
-        6,
+        7,
         "RANKING FINAL",
     )
 
@@ -591,7 +687,7 @@ def run_scanner() -> dict[str, object]:
     if GENERATE_EXCEL_REPORT:
 
         print_stage(
-            7,
+            8,
             "GERAÇÃO DO RELATÓRIO EXCEL",
         )
 
@@ -651,6 +747,12 @@ def run_scanner() -> dict[str, object]:
 
         "technical_ranking":
             technical_ranking,
+
+        "timing_ranking":
+            timing_ranking,
+
+        "technical_with_timing":
+            technical_with_timing,
 
         "signals":
             signals,
