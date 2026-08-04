@@ -167,11 +167,15 @@ def normalize_columns(
     data: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Padroniza os nomes das colunas.
+    Padroniza os nomes das colunas sem criar duplicidades.
+
+    Quando a coluna canônica já existe, ela é preservada e a
+    equivalente em inglês é removida.
     """
 
     df = data.copy()
 
+    # Padronização básica dos nomes.
     df.columns = [
         str(column)
         .strip()
@@ -181,33 +185,58 @@ def normalize_columns(
         for column in df.columns
     ]
 
+    # Remove duplicidades que já possam existir.
+    df = df.loc[
+        :,
+        ~df.columns.duplicated(
+            keep="last"
+        )
+    ].copy()
+
     aliases = {
         "atr_percent": "atr_percentual",
         "distance_sma_20": "distancia_sma_20",
         "distance_sma_50": "distancia_sma_50",
         "distance_sma_200": "distancia_sma_200",
-        "distance_from_52w_high":
-            "distancia_maxima_52s",
-        "position_in_52w_range":
-            "posicao_intervalo_52s",
-        "relative_volume_20d":
-            "volume_relativo_20d",
+        "distance_from_52w_high": "distancia_maxima_52s",
+        "position_in_52w_range": "posicao_intervalo_52s",
+        "relative_volume_20d": "volume_relativo_20d",
         "return_1m": "retorno_1m",
         "return_3m": "retorno_3m",
         "return_6m": "retorno_6m",
-        "macd_hist_change":
-            "macd_hist_variacao",
+        "macd_hist_change": "macd_hist_variacao",
     }
 
-    return df.rename(
-        columns={
-            column: aliases.get(
-                column,
-                column,
+    # Renomeação segura.
+    for source_column, target_column in aliases.items():
+
+        if source_column not in df.columns:
+            continue
+
+        if target_column in df.columns:
+            df = df.drop(
+                columns=[
+                    source_column
+                ]
             )
-            for column in df.columns
-        }
-    )
+
+        else:
+            df = df.rename(
+                columns={
+                    source_column:
+                        target_column
+                }
+            )
+
+    # Proteção final contra nomes duplicados.
+    df = df.loc[
+        :,
+        ~df.columns.duplicated(
+            keep="last"
+        )
+    ].copy()
+
+    return df
 
 
 def validate_input(
@@ -795,6 +824,7 @@ def calculate_momentum_score(
     return clip_score(
         score
     )
+
     # ============================================================
 # SCORE DE TENDÊNCIA
 # ============================================================
