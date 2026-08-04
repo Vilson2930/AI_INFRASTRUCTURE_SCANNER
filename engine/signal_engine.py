@@ -115,7 +115,7 @@ def normalize_columns(
     data: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Padroniza os nomes das colunas.
+    Padroniza os nomes das colunas sem criar duplicidades.
     """
 
     df = data.copy()
@@ -129,6 +129,14 @@ def normalize_columns(
         for column in df.columns
     ]
 
+    # Remove duplicidades já existentes.
+    df = df.loc[
+        :,
+        ~df.columns.duplicated(
+            keep="last"
+        )
+    ].copy()
+
     aliases = {
         "entrada_tecnica_aprovada":
             "technical_entry_approved",
@@ -139,19 +147,51 @@ def normalize_columns(
         "diagnostico_entrada":
             "technical_diagnosis",
 
-        "institutional_flow_approved":
-            "institutional_flow_approved",
+        "score_desconto":
+            "score_discount",
+
+        "score_tendencia":
+            "score_trend",
+
+        "score_volume_fluxo":
+            "score_volume_flow",
+
+        "score_risco":
+            "score_risk",
+
+        "penalidade_tecnica":
+            "technical_penalty",
+
+        "motivos_penalidade":
+            "technical_penalty_reasons",
     }
 
-    return df.rename(
-        columns={
-            column: aliases.get(
-                column,
-                column,
+    for source_column, target_column in aliases.items():
+
+        if source_column not in df.columns:
+            continue
+
+        if target_column in df.columns:
+            df = df.drop(
+                columns=[source_column]
             )
-            for column in df.columns
-        }
-    )
+        else:
+            df = df.rename(
+                columns={
+                    source_column:
+                        target_column
+                }
+            )
+
+    # Proteção final.
+    df = df.loc[
+        :,
+        ~df.columns.duplicated(
+            keep="last"
+        )
+    ].copy()
+
+    return df
 
 
 def validate_dataframe(
@@ -505,17 +545,397 @@ def final_score_condition(
     )
 
 
+def count_market_confirmations(
+    row: pd.Series,
+) -> int:
+    """
+    Conta confirmações independentes de entrada.
+
+    Confirmações:
+    - MACD;
+    - tendência;
+    - volume/fluxo.
+    """
+
+    confirmations = [
+        boolean_value(
+            row.get(
+                "macd_confirmation",
+                False,
+            )
+        ),
+        boolean_value(
+            row.get(
+                "trend_confirmation",
+                False,
+            )
+        ),
+        boolean_value(
+            row.get(
+                "volume_confirmation",
+                False,
+            )
+        ),
+    ]
+
+    return int(
+        sum(confirmations)
+    )
+
+
+def risk_condition(
+    row: pd.Series,
+) -> bool:
+    """
+    Confirma que o risco técnico permanece aceitável.
+    """
+
+    risk_confirmed = boolean_value(
+        row.get(
+            "risk_confirmation",
+            False,
+        )
+    )
+
+    technical_penalty = row.get(
+        "technical_penalty",
+        0,
+    )
+
+    atr_percentual = row.get(
+        "atr_percentual",
+        np.nan,
+    )
+
+    penalty_ok = (
+        not is_valid_number(
+            technical_penalty
+        )
+        or float(
+            technical_penalty
+        ) < 15
+    )
+
+    atr_ok = (
+        not is_valid_number(
+            atr_percentual
+        )
+        or float(
+            atr_percentual
+        ) <= 10
+    )
+
+    return bool(
+        risk_confirmed
+        and penalty_ok
+        and atr_ok
+    )
+
+
+def calculate_entry_probability(
+    row: pd.Series,
+) -> float:
+    """
+    Estima a probabilidade operacional da entrada.
+
+    Trata-se de uma estimativa heurística de confluência,
+    não de uma probabilidade estatística calibrada por backtest.
+    """
+
+    final_score = float(
+        row.get(
+            "final_score",
+            0,
+        )
+    )
+
+    confluence_score = float(
+        row.get(
+            "confluence_score",
+            0,
+        )
+    )
+
+    confirmations = int(
+        row.get(
+            "confirmation_count",
+            0,
+        )
+    )
+
+    institutional_ok = institutional_condition(
+        row
+    )
+
+    technical_score_ok = (
+        is_valid_number(
+            row.get(
+                "technical_entry_score"
+            )
+        )
+        and float(
+            row.get(
+                "technical_entry_score"
+            )
+        ) >= MIN_TECHNICAL_SCORE
+    )
+
+    risk_ok = risk_condition(
+        row
+    )
+
+    probability = (
+        final_score * 0.55
+        +
+        confluence_score * 0.20
+        +
+        confirmations / 3 * 15
+    )
+
+    if institutional_ok:
+        probability += 4
+
+    if technical_score_ok:
+        probability += 4
+
+    if risk_ok:
+        probability += 2
+    else:
+        probability -= 10
+
+    return round(
+        clip_score(
+            probability
+        ),
+        2,
+    )
+
+
+def calculate_star_rating(
+    probability: float,
+) -> str:
+    """
+    Converte a probabilidade estimada em estrelas.
+    """
+
+    if not is_valid_number(
+        probability
+    ):
+        return "☆☆☆☆☆"
+
+    probability = float(
+        probability
+    )
+
+    if probability >= 85:
+        return "★★★★★"
+
+    if probability >= 75:
+        return "★★★★☆"
+
+    if probability >= 65:
+        return "★★★☆☆"
+
+    if probability >= 55:
+        return "★★☆☆☆"
+
+    return "★☆☆☆☆"
+
+
+def estimate_upside_percent(
+    row: pd.Series,
+) -> float:
+    """
+    Estima potencial de alta para swing usando:
+    - distância até a máxima de 52 semanas;
+    - ATR percentual;
+    - força de tendência.
+
+    É uma referência quantitativa, não um preço-alvo.
+    """
+
+    distance_high = row.get(
+        "distancia_maxima_52s",
+        np.nan,
+    )
+
+    atr = row.get(
+        "atr_percentual",
+        np.nan,
+    )
+
+    trend_score = row.get(
+        "score_trend",
+        np.nan,
+    )
+
+    components = []
+
+    if is_valid_number(
+        distance_high
+    ):
+        recovery_potential = max(
+            0.0,
+            min(
+                abs(
+                    float(
+                        distance_high
+                    )
+                ) * 0.60,
+                35.0,
+            )
+        )
+        components.append(
+            recovery_potential
+        )
+
+    if is_valid_number(
+        atr
+    ):
+        components.append(
+            min(
+                float(atr) * 3,
+                25.0,
+            )
+        )
+
+    if is_valid_number(
+        trend_score
+    ):
+        components.append(
+            max(
+                0.0,
+                (
+                    float(
+                        trend_score
+                    )
+                    -
+                    50
+                ) * 0.20,
+            )
+        )
+
+    if not components:
+        return 0.0
+
+    return round(
+        float(
+            np.mean(
+                components
+            )
+        ),
+        2,
+    )
+
+
+def estimate_risk_reward_ratio(
+    row: pd.Series,
+) -> float:
+    """
+    Estima relação retorno/risco com base no upside e ATR.
+    """
+
+    upside = row.get(
+        "estimated_upside_percent",
+        0,
+    )
+
+    atr = row.get(
+        "atr_percentual",
+        np.nan,
+    )
+
+    if not (
+        is_valid_number(
+            upside
+        )
+        and is_valid_number(
+            atr
+        )
+        and float(
+            atr
+        ) > 0
+    ):
+        return 0.0
+
+    estimated_risk = max(
+        float(atr) * 2,
+        5.0,
+    )
+
+    return round(
+        float(upside)
+        /
+        estimated_risk,
+        2,
+    )
+
+
 def calculate_signal_approval(
     row: pd.Series,
 ) -> bool:
     """
-    Aprovação final do sinal.
+    Aprovação final por confluência.
+
+    Regras:
+    - Institutional Score mínimo;
+    - Technical Score mínimo;
+    - Final Score mínimo;
+    - risco aceitável;
+    - pelo menos 2 de 3 confirmações independentes.
+
+    A entrada técnica aprovada pelo motor técnico conta como
+    confirmação forte, mas não é mais o único caminho possível.
     """
 
+    institutional_ok = institutional_condition(
+        row
+    )
+
+    technical_score = row.get(
+        "technical_entry_score",
+        np.nan,
+    )
+
+    technical_score_ok = bool(
+        is_valid_number(
+            technical_score
+        )
+        and float(
+            technical_score
+        ) >= MIN_TECHNICAL_SCORE
+    )
+
+    final_ok = final_score_condition(
+        row
+    )
+
+    risk_ok = risk_condition(
+        row
+    )
+
+    confirmations = count_market_confirmations(
+        row
+    )
+
+    technical_engine_approved = boolean_value(
+        row.get(
+            "technical_entry_approved",
+            False,
+        )
+    )
+
+    confirmation_ok = bool(
+        confirmations >= 2
+        or technical_engine_approved
+    )
+
     return bool(
-        institutional_condition(row)
-        and technical_condition(row)
-        and final_score_condition(row)
+        institutional_ok
+        and technical_score_ok
+        and final_ok
+        and risk_ok
+        and confirmation_ok
     )
 
 
@@ -527,30 +947,42 @@ def define_signal_status(
     row: pd.Series,
 ) -> str:
     """
-    Define o status operacional da ação.
+    Define o status operacional por faixas de confluência.
     """
 
-    institutional_score = row.get(
-        "institutional_score",
-        0,
+    institutional_score = float(
+        row.get(
+            "institutional_score",
+            0,
+        )
     )
 
-    technical_score = row.get(
-        "technical_entry_score",
-        0,
+    technical_score = float(
+        row.get(
+            "technical_entry_score",
+            0,
+        )
     )
 
-    final_score = row.get(
-        "final_score",
-        0,
+    final_score = float(
+        row.get(
+            "final_score",
+            0,
+        )
     )
 
-    institutional_approved = (
-        institutional_condition(row)
+    confirmations = int(
+        row.get(
+            "confirmation_count",
+            0,
+        )
     )
 
-    technical_approved = (
-        technical_condition(row)
+    probability = float(
+        row.get(
+            "entry_probability",
+            0,
+        )
     )
 
     signal_approved = boolean_value(
@@ -558,6 +990,14 @@ def define_signal_status(
             "signal_approved",
             False,
         )
+    )
+
+    institutional_ok = institutional_condition(
+        row
+    )
+
+    risk_ok = risk_condition(
+        row
     )
 
     technical_diagnosis = str(
@@ -571,49 +1011,43 @@ def define_signal_status(
         return "ENTRADA APROVADA"
 
     if (
-        institutional_approved
-        and
-        is_valid_number(technical_score)
-        and float(technical_score)
-        >= MIN_TECHNICAL_SCORE
-        and not technical_approved
+        institutional_ok
+        and technical_score >= MIN_TECHNICAL_SCORE
+        and final_score >= 68
+        and risk_ok
+        and confirmations >= 1
     ):
-        return "AGUARDAR CONFIRMAÇÃO TÉCNICA"
+        return "PRÉ-ENTRADA — AGUARDAR GATILHO"
 
     if (
-        institutional_approved
-        and
-        (
-            "AGUARDAR GATILHO"
-            in technical_diagnosis
-            or
+        institutional_ok
+        and (
             "REVERSÃO EM FORMAÇÃO"
+            in technical_diagnosis
+            or "AGUARDAR GATILHO"
             in technical_diagnosis
         )
     ):
         return "AGUARDAR GATILHO"
 
     if (
-        technical_approved
-        and
-        is_valid_number(institutional_score)
-        and float(institutional_score)
-        < MIN_INSTITUTIONAL_SCORE
+        technical_score >= MIN_TECHNICAL_SCORE
+        and institutional_score < MIN_INSTITUTIONAL_SCORE
     ):
         return "TÉCNICA BOA — FLUXO INSUFICIENTE"
 
     if (
-        is_valid_number(final_score)
-        and float(final_score) >= 65
+        final_score >= 65
+        or probability >= 65
     ):
         return "OBSERVAÇÃO PRIORITÁRIA"
 
     if (
-        is_valid_number(institutional_score)
-        and float(institutional_score) < 45
-        and
-        is_valid_number(technical_score)
-        and float(technical_score) < 45
+        not risk_ok
+        or (
+            institutional_score < 45
+            and technical_score < 45
+        )
     ):
         return "NÃO COMPRAR"
 
@@ -890,11 +1324,23 @@ def list_signal_pending_conditions(
             "Technical Score abaixo do mínimo"
         )
 
-    if not boolean_value(
+    technical_engine_approved = boolean_value(
         row.get(
             "technical_entry_approved",
             False,
         )
+    )
+
+    confirmation_count = int(
+        row.get(
+            "confirmation_count",
+            0,
+        )
+    )
+
+    if (
+        not technical_engine_approved
+        and confirmation_count < 2
     ):
         pending.append(
             "entrada técnica ainda não confirmada"
@@ -1057,10 +1503,11 @@ def generate_executive_decision(
             f"aguarda confirmação de entrada."
         )
 
-    if status == "AGUARDAR CONFIRMAÇÃO TÉCNICA":
+    if status == "PRÉ-ENTRADA — AGUARDAR GATILHO":
         return (
-            f"{ticker}: fluxo institucional aprovado; "
-            f"aguardar confirmação completa da análise técnica."
+            f"{ticker}: confluência elevada, mas ainda falta "
+            f"um gatilho complementar. Nota final "
+            f"{float(final_score):.2f}."
         )
 
     if status == "TÉCNICA BOA — FLUXO INSUFICIENTE":
@@ -1190,6 +1637,13 @@ class SignalEngine:
                 "entre os motores."
             )
 
+        result = result.loc[
+            :,
+            ~result.columns.duplicated(
+                keep="last"
+            )
+        ].copy()
+
         # ----------------------------------------------------
         # SCORE FINAL
         # ----------------------------------------------------
@@ -1214,6 +1668,27 @@ class SignalEngine:
             calculate_signal_strength,
             axis=1,
         ).round(2)
+
+        result[
+            "confirmation_count"
+        ] = result.apply(
+            count_market_confirmations,
+            axis=1,
+        )
+
+        result[
+            "estimated_upside_percent"
+        ] = result.apply(
+            estimate_upside_percent,
+            axis=1,
+        )
+
+        result[
+            "risk_reward_ratio"
+        ] = result.apply(
+            estimate_risk_reward_ratio,
+            axis=1,
+        )
 
         # ----------------------------------------------------
         # CONDIÇÕES
@@ -1245,6 +1720,21 @@ class SignalEngine:
         ] = result.apply(
             calculate_signal_approval,
             axis=1,
+        )
+
+        result[
+            "entry_probability"
+        ] = result.apply(
+            calculate_entry_probability,
+            axis=1,
+        )
+
+        result[
+            "star_rating"
+        ] = result[
+            "entry_probability"
+        ].apply(
+            calculate_star_rating
         )
 
         # ----------------------------------------------------
@@ -1304,8 +1794,8 @@ class SignalEngine:
 
         status_order = {
             "ENTRADA APROVADA": 1,
-            "AGUARDAR GATILHO": 2,
-            "AGUARDAR CONFIRMAÇÃO TÉCNICA": 3,
+            "PRÉ-ENTRADA — AGUARDAR GATILHO": 2,
+            "AGUARDAR GATILHO": 3,
             "OBSERVAÇÃO PRIORITÁRIA": 4,
             "TÉCNICA BOA — FLUXO INSUFICIENTE": 5,
             "OBSERVAÇÃO": 6,
@@ -1424,8 +1914,8 @@ class SignalEngine:
             return pd.DataFrame()
 
         watch_status = {
+            "PRÉ-ENTRADA — AGUARDAR GATILHO",
             "AGUARDAR GATILHO",
-            "AGUARDAR CONFIRMAÇÃO TÉCNICA",
             "OBSERVAÇÃO PRIORITÁRIA",
         }
 
@@ -1507,6 +1997,10 @@ class SignalEngine:
                 "signal_approved",
                 "final_score",
                 "signal_strength_score",
+                "entry_probability",
+                "star_rating",
+                "estimated_upside_percent",
+                "risk_reward_ratio",
                 "institutional_score",
                 "technical_entry_score",
                 "institutional_classification",
