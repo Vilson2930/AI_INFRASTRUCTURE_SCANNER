@@ -52,11 +52,18 @@ SIGNAL_OUTPUT_FILE = (
 MAX_SCORE = 100.0
 
 # Regras mínimas de execução.
-MIN_RISK_REWARD_APPROVAL = 1.00
-MIN_RISK_REWARD_PRE_ENTRY = 0.80
-MIN_RELATIVE_VOLUME_APPROVAL = 0.70
+MIN_RISK_REWARD_STRONG = 1.50
+MIN_RISK_REWARD_APPROVAL = 1.20
+MIN_RISK_REWARD_PRE_ENTRY = 0.90
+MIN_RELATIVE_VOLUME_APPROVAL = 0.80
 MIN_CMF_VOLUME_EXCEPTION = 0.10
 MIN_SHORT_VOLUME_EXCEPTION = 1.00
+MIN_INSTITUTIONAL_SCORE_REFINED = 68.0
+MIN_FINAL_SCORE_REFINED = 72.0
+MIN_FINAL_SCORE_STRONG = 78.0
+MIN_INSTITUTIONAL_SCORE_STRONG = 72.0
+MIN_TECHNICAL_SCORE_STRONG = 78.0
+MIN_TIMING_SCORE_STRONG = 80.0
 
 MINIMUM_TECHNICAL_COLUMNS = {
     "ticker",
@@ -554,7 +561,7 @@ def institutional_condition(
     return bool(
         is_valid_number(score)
         and float(score)
-        >= MIN_INSTITUTIONAL_SCORE
+        >= MIN_INSTITUTIONAL_SCORE_REFINED
         and approved
     )
 
@@ -704,9 +711,10 @@ def risk_reward_condition(
     Exige relação risco/retorno mínima para entrada imediata.
 
     Regras:
-    - abaixo de 0,80: rejeita a entrada;
-    - de 0,80 até abaixo de 1,00: mantém como pré-entrada;
-    - a partir de 1,00: permite entrada normal.
+    - abaixo de 0,90: aguardar;
+    - de 0,90 até abaixo de 1,20: pré-entrada;
+    - de 1,20 até abaixo de 1,50: entrada aprovada;
+    - a partir de 1,50: entrada forte.
     """
 
     ratio = row.get(
@@ -715,12 +723,8 @@ def risk_reward_condition(
     )
 
     return bool(
-        is_valid_number(
-            ratio
-        )
-        and float(
-            ratio
-        ) >= MIN_RISK_REWARD_APPROVAL
+        is_valid_number(ratio)
+        and float(ratio) >= MIN_RISK_REWARD_APPROVAL
     )
 
 
@@ -798,7 +802,7 @@ def final_score_condition(
     return bool(
         is_valid_number(score)
         and float(score)
-        >= MIN_FINAL_SCORE
+        >= MIN_FINAL_SCORE_REFINED
     )
 
 
@@ -1148,6 +1152,36 @@ def estimate_risk_reward_ratio(
     )
 
 
+def strong_entry_condition(
+    row: pd.Series,
+) -> bool:
+    """
+    Identifica uma entrada de qualidade superior.
+    """
+
+    ratio = row.get("risk_reward_ratio", np.nan)
+    institutional_score = row.get("institutional_score", np.nan)
+    technical_score = row.get("technical_entry_score", np.nan)
+    timing_score = row.get("entry_timing_score", np.nan)
+    final_score = row.get("final_score", np.nan)
+
+    return bool(
+        is_valid_number(ratio)
+        and float(ratio) >= MIN_RISK_REWARD_STRONG
+        and is_valid_number(institutional_score)
+        and float(institutional_score) >= MIN_INSTITUTIONAL_SCORE_STRONG
+        and is_valid_number(technical_score)
+        and float(technical_score) >= MIN_TECHNICAL_SCORE_STRONG
+        and is_valid_number(timing_score)
+        and float(timing_score) >= MIN_TIMING_SCORE_STRONG
+        and is_valid_number(final_score)
+        and float(final_score) >= MIN_FINAL_SCORE_STRONG
+        and volume_entry_condition(row)
+        and timing_condition(row)
+        and not timing_veto(row)
+    )
+
+
 def calculate_signal_approval(
     row: pd.Series,
 ) -> bool:
@@ -1219,102 +1253,46 @@ def define_signal_status(
     row: pd.Series,
 ) -> str:
     """
-    Define o status operacional incluindo timing, volume
-    e relação risco/retorno.
+    Define o status operacional refinado.
     """
 
-    institutional_score = float(
-        row.get(
-            "institutional_score",
-            0,
-        )
-    )
+    institutional_score = float(row.get("institutional_score", 0))
+    technical_score = float(row.get("technical_entry_score", 0))
+    final_score = float(row.get("final_score", 0))
+    timing_status = str(row.get("timing_status", "")).upper()
+    institutional_ok = institutional_condition(row)
+    ratio = row.get("risk_reward_ratio", np.nan)
 
-    technical_score = float(
-        row.get(
-            "technical_entry_score",
-            0,
-        )
-    )
-
-    final_score = float(
-        row.get(
-            "final_score",
-            0,
-        )
-    )
-
-    timing_status = str(
-        row.get(
-            "timing_status",
-            "",
-        )
-    ).upper()
-
-    institutional_ok = institutional_condition(
-        row
-    )
-
-    ratio = row.get(
-        "risk_reward_ratio",
-        np.nan,
-    )
-
-    if boolean_value(
-        row.get(
-            "signal_approved",
-            False,
-        )
-    ):
+    if boolean_value(row.get("signal_approved", False)):
+        if strong_entry_condition(row):
+            return "ENTRADA FORTE"
         return "ENTRADA APROVADA"
 
     if timing_status == "MUITO ESTICADA":
         return "MUITO ESTICADA — NÃO PERSEGUIR"
 
-    if (
-        timing_status == "AGUARDAR PULLBACK"
-        or timing_veto(
-            row
-        )
-    ):
+    if timing_status == "AGUARDAR PULLBACK" or timing_veto(row):
         return "AGUARDAR PULLBACK"
 
     if timing_status == "AGUARDAR ROMPIMENTO":
         return "AGUARDAR ROMPIMENTO"
 
-    # Ativos que passaram nos três motores, mas ainda não
-    # oferecem relação risco/retorno aceitável.
     if (
         institutional_ok
         and technical_score >= MIN_TECHNICAL_SCORE
-        and timing_status in {
-            "ENTRAR AGORA",
-            "PRÉ-ENTRADA",
-        }
-        and is_valid_number(
-            ratio
-        )
-        and float(
-            ratio
-        ) < MIN_RISK_REWARD_APPROVAL
+        and timing_status in {"ENTRAR AGORA", "PRÉ-ENTRADA"}
+        and is_valid_number(ratio)
+        and float(ratio) < MIN_RISK_REWARD_APPROVAL
     ):
-
-        if float(
-            ratio
-        ) < MIN_RISK_REWARD_PRE_ENTRY:
+        if float(ratio) < MIN_RISK_REWARD_PRE_ENTRY:
             return "AGUARDAR MELHOR RISCO/RETORNO"
-
         return "PRÉ-ENTRADA — MELHORAR RISCO/RETORNO"
 
-    # Ativos tecnicamente qualificados, mas sem volume
-    # suficiente para execução imediata.
     if (
         institutional_ok
         and technical_score >= MIN_TECHNICAL_SCORE
         and timing_status == "ENTRAR AGORA"
-        and not volume_entry_condition(
-            row
-        )
+        and not volume_entry_condition(row)
     ):
         return "PRÉ-ENTRADA — AGUARDAR VOLUME"
 
@@ -1322,22 +1300,20 @@ def define_signal_status(
         timing_status == "PRÉ-ENTRADA"
         and institutional_ok
         and technical_score >= MIN_TECHNICAL_SCORE
-        and final_score >= 68
+        and final_score >= 70
     ):
         return "PRÉ-ENTRADA — AGUARDAR GATILHO"
 
     if (
         technical_score >= MIN_TECHNICAL_SCORE
-        and institutional_score < MIN_INSTITUTIONAL_SCORE
+        and institutional_score < MIN_INSTITUTIONAL_SCORE_REFINED
     ):
         return "TÉCNICA BOA — FLUXO INSUFICIENTE"
 
     if final_score >= 65:
         return "OBSERVAÇÃO PRIORITÁRIA"
 
-    if not risk_condition(
-        row
-    ):
+    if not risk_condition(row):
         return "NÃO COMPRAR"
 
     return "OBSERVAÇÃO"
@@ -1435,7 +1411,7 @@ def list_signal_positive_factors(
             institutional_score
         )
         and float(institutional_score)
-        >= MIN_INSTITUTIONAL_SCORE
+        >= MIN_INSTITUTIONAL_SCORE_REFINED
     ):
         factors.append(
             "fluxo institucional aprovado"
@@ -1903,10 +1879,17 @@ def generate_executive_decision(
         0,
     )
 
+    if status == "ENTRADA FORTE":
+        return (
+            f"{ticker}: entrada forte, com confluência elevada, "
+            f"volume confirmado e relação risco/retorno superior. "
+            f"Nota final {float(final_score):.2f}."
+        )
+
     if status == "ENTRADA APROVADA":
         return (
-            f"{ticker}: compra tecnicamente confirmada, "
-            f"com fluxo institucional favorável. "
+            f"{ticker}: entrada aprovada, com fluxo institucional, "
+            f"técnica e timing favoráveis. "
             f"Nota final {float(final_score):.2f}."
         )
 
@@ -2270,18 +2253,19 @@ class SignalEngine:
         # ----------------------------------------------------
 
         status_order = {
-            "ENTRADA APROVADA": 1,
-            "PRÉ-ENTRADA — AGUARDAR VOLUME": 2,
-            "PRÉ-ENTRADA — MELHORAR RISCO/RETORNO": 3,
-            "PRÉ-ENTRADA — AGUARDAR GATILHO": 4,
-            "AGUARDAR MELHOR RISCO/RETORNO": 5,
-            "AGUARDAR PULLBACK": 6,
-            "AGUARDAR ROMPIMENTO": 7,
-            "OBSERVAÇÃO PRIORITÁRIA": 8,
-            "TÉCNICA BOA — FLUXO INSUFICIENTE": 9,
-            "OBSERVAÇÃO": 10,
-            "NÃO COMPRAR": 11,
-            "MUITO ESTICADA — NÃO PERSEGUIR": 12,
+            "ENTRADA FORTE": 1,
+            "ENTRADA APROVADA": 2,
+            "PRÉ-ENTRADA — AGUARDAR VOLUME": 3,
+            "PRÉ-ENTRADA — MELHORAR RISCO/RETORNO": 4,
+            "PRÉ-ENTRADA — AGUARDAR GATILHO": 5,
+            "AGUARDAR MELHOR RISCO/RETORNO": 6,
+            "AGUARDAR PULLBACK": 7,
+            "AGUARDAR ROMPIMENTO": 8,
+            "OBSERVAÇÃO PRIORITÁRIA": 9,
+            "TÉCNICA BOA — FLUXO INSUFICIENTE": 10,
+            "OBSERVAÇÃO": 11,
+            "NÃO COMPRAR": 12,
+            "MUITO ESTICADA — NÃO PERSEGUIR": 13,
         }
 
         result[
@@ -2453,8 +2437,8 @@ class SignalEngine:
         )
 
         print(
-            f"Institutional Score mínimo: "
-            f"{MIN_INSTITUTIONAL_SCORE}"
+            f"Institutional Score mínimo refinado: "
+            f"{MIN_INSTITUTIONAL_SCORE_REFINED}"
         )
 
         print(
@@ -2463,8 +2447,18 @@ class SignalEngine:
         )
 
         print(
-            f"Final Score mínimo: "
-            f"{MIN_FINAL_SCORE}"
+            f"Final Score mínimo refinado: "
+            f"{MIN_FINAL_SCORE_REFINED}"
+        )
+
+        print(
+            f"Risk/Reward mínimo: "
+            f"{MIN_RISK_REWARD_APPROVAL}"
+        )
+
+        print(
+            f"Volume relativo mínimo: "
+            f"{MIN_RELATIVE_VOLUME_APPROVAL}"
         )
 
         print(
