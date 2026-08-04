@@ -73,6 +73,24 @@ BREAKOUT_FILE = (
     / "aguardar_rompimento.csv"
 )
 
+STRONG_ENTRIES_FILE = (
+    Path(DATA_PATH)
+    / "entradas_fortes.csv"
+)
+
+LOW_RR_FILE = (
+    Path(DATA_PATH)
+    / "aguardar_melhor_risco_retorno.csv"
+)
+
+WAIT_VOLUME_FILE = (
+    Path(DATA_PATH)
+    / "aguardar_volume.csv"
+)
+
+MIN_RISK_REWARD_APPROVAL = 1.20
+MIN_RISK_REWARD_STRONG = 1.50
+
 
 REQUIRED_COLUMNS = {
     "ticker",
@@ -392,15 +410,19 @@ def signal_status_priority(
     """
 
     status_map = {
-        "ENTRADA APROVADA": 1,
-        "PRÉ-ENTRADA — AGUARDAR GATILHO": 2,
-        "AGUARDAR PULLBACK": 3,
-        "AGUARDAR ROMPIMENTO": 4,
-        "OBSERVAÇÃO PRIORITÁRIA": 5,
-        "TÉCNICA BOA — FLUXO INSUFICIENTE": 6,
-        "OBSERVAÇÃO": 7,
-        "NÃO COMPRAR": 8,
-        "MUITO ESTICADA — NÃO PERSEGUIR": 9,
+        "ENTRADA FORTE": 1,
+        "ENTRADA APROVADA": 2,
+        "PRÉ-ENTRADA — AGUARDAR VOLUME": 3,
+        "PRÉ-ENTRADA — MELHORAR RISCO/RETORNO": 4,
+        "PRÉ-ENTRADA — AGUARDAR GATILHO": 5,
+        "AGUARDAR MELHOR RISCO/RETORNO": 6,
+        "AGUARDAR PULLBACK": 7,
+        "AGUARDAR ROMPIMENTO": 8,
+        "OBSERVAÇÃO PRIORITÁRIA": 9,
+        "TÉCNICA BOA — FLUXO INSUFICIENTE": 10,
+        "OBSERVAÇÃO": 11,
+        "NÃO COMPRAR": 12,
+        "MUITO ESTICADA — NÃO PERSEGUIR": 13,
     }
 
     return status_map.get(
@@ -417,7 +439,7 @@ def calculate_priority_score(
     row: pd.Series,
 ) -> float:
     """
-    Calcula a prioridade operacional com três motores.
+    Calcula a prioridade operacional refinada.
 
     Pesos:
     - Final Score: 25%
@@ -428,55 +450,20 @@ def calculate_priority_score(
     - Confluence Score: 5%
 
     Ajustes:
-    - bônus para entrada aprovada;
-    - bônus menor para pré-entrada;
-    - penalidade para risco/retorno insuficiente;
-    - penalidade para risco de pullback e movimento parabólico.
+    - bônus forte para ENTRADA FORTE;
+    - bônus moderado para ENTRADA APROVADA;
+    - penalidade progressiva por risco/retorno;
+    - penalidade por volume não confirmado;
+    - penalidade por pullback e risco parabólico.
     """
 
     components = [
-        (
-            row.get(
-                "final_score",
-                0,
-            ),
-            0.25,
-        ),
-        (
-            row.get(
-                "signal_strength_score",
-                0,
-            ),
-            0.20,
-        ),
-        (
-            row.get(
-                "institutional_score",
-                0,
-            ),
-            0.15,
-        ),
-        (
-            row.get(
-                "technical_entry_score",
-                0,
-            ),
-            0.15,
-        ),
-        (
-            row.get(
-                "entry_timing_score",
-                0,
-            ),
-            0.20,
-        ),
-        (
-            row.get(
-                "confluence_score",
-                50,
-            ),
-            0.05,
-        ),
+        (row.get("final_score", 0), 0.25),
+        (row.get("signal_strength_score", 0), 0.20),
+        (row.get("institutional_score", 0), 0.15),
+        (row.get("technical_entry_score", 0), 0.15),
+        (row.get("entry_timing_score", 0), 0.20),
+        (row.get("confluence_score", 50), 0.05),
     ]
 
     weighted_sum = 0.0
@@ -484,28 +471,14 @@ def calculate_priority_score(
 
     for value, weight in components:
 
-        if is_valid_number(
-            value
-        ):
-
-            weighted_sum += (
-                float(value)
-                *
-                float(weight)
-            )
-
-            total_weight += float(
-                weight
-            )
+        if is_valid_number(value):
+            weighted_sum += float(value) * float(weight)
+            total_weight += float(weight)
 
     if total_weight == 0:
         return 0.0
 
-    score = (
-        weighted_sum
-        /
-        total_weight
-    )
+    score = weighted_sum / total_weight
 
     status = str(
         row.get(
@@ -514,15 +487,17 @@ def calculate_priority_score(
         )
     ).strip()
 
-    if boolean_value(
-        row.get(
-            "signal_approved",
-            False,
-        )
-    ):
+    if status == "ENTRADA FORTE":
+        score += 8
+
+    elif status == "ENTRADA APROVADA":
         score += 5
 
-    elif status == "PRÉ-ENTRADA — AGUARDAR GATILHO":
+    elif status in {
+        "PRÉ-ENTRADA — AGUARDAR VOLUME",
+        "PRÉ-ENTRADA — MELHORAR RISCO/RETORNO",
+        "PRÉ-ENTRADA — AGUARDAR GATILHO",
+    }:
         score += 2
 
     risk_reward = row.get(
@@ -530,34 +505,40 @@ def calculate_priority_score(
         np.nan,
     )
 
-    if is_valid_number(
-        risk_reward
-    ):
+    if is_valid_number(risk_reward):
 
-        risk_reward = float(
-            risk_reward
-        )
+        risk_reward = float(risk_reward)
 
-        if risk_reward < 0.75:
-            score -= 12
-
-        elif risk_reward < 1.00:
-            score -= 8
+        if risk_reward < 0.90:
+            score -= 15
 
         elif risk_reward < 1.20:
-            score -= 3
+            score -= 8
 
-        elif risk_reward >= 1.50:
-            score += 3
+        elif risk_reward < 1.50:
+            score += 1
+
+        else:
+            score += 5
+
+    if (
+        "volume_entry_condition_approved"
+        in row.index
+        and not boolean_value(
+            row.get(
+                "volume_entry_condition_approved",
+                False,
+            )
+        )
+    ):
+        score -= 8
 
     pullback_probability = row.get(
         "pullback_probability",
         np.nan,
     )
 
-    if is_valid_number(
-        pullback_probability
-    ):
+    if is_valid_number(pullback_probability):
 
         pullback_probability = float(
             pullback_probability
@@ -613,51 +594,51 @@ def classify_ranking_quality(
     Classifica a qualidade geral da oportunidade.
     """
 
-    priority_score = row.get(
-        "priority_score",
-        0,
-    )
-
-    approved = boolean_value(
+    priority_score = float(
         row.get(
-            "signal_approved",
-            False,
+            "priority_score",
+            0,
         )
     )
+
+    status = str(
+        row.get(
+            "signal_status",
+            "",
+        )
+    ).strip()
 
     risk_reward = row.get(
         "risk_reward_ratio",
         np.nan,
     )
 
-    risk_reward_ok = bool(
-        not is_valid_number(
-            risk_reward
-        )
-        or float(
-            risk_reward
-        ) >= 1.0
-    )
+    if status == "ENTRADA FORTE":
+        return "OPORTUNIDADE PREMIUM"
 
-    if (
-        approved
-        and priority_score >= 85
-        and risk_reward_ok
-    ):
-        return "OPORTUNIDADE EXCEPCIONAL"
+    if status == "ENTRADA APROVADA":
 
-    if (
-        approved
-        and priority_score >= 75
-        and risk_reward_ok
-    ):
-        return "OPORTUNIDADE FORTE"
+        if (
+            is_valid_number(risk_reward)
+            and float(risk_reward) >= MIN_RISK_REWARD_STRONG
+            and priority_score >= 85
+        ):
+            return "OPORTUNIDADE EXCEPCIONAL"
 
-    if approved and not risk_reward_ok:
-        return "ENTRADA APROVADA — RISCO/RETORNO FRACO"
+        if priority_score >= 75:
+            return "OPORTUNIDADE FORTE"
 
-    if approved:
         return "ENTRADA APROVADA"
+
+    if status in {
+        "PRÉ-ENTRADA — AGUARDAR VOLUME",
+        "PRÉ-ENTRADA — MELHORAR RISCO/RETORNO",
+        "PRÉ-ENTRADA — AGUARDAR GATILHO",
+    }:
+        return "PRÉ-ENTRADA QUALIFICADA"
+
+    if status == "AGUARDAR MELHOR RISCO/RETORNO":
+        return "QUALIDADE BOA — EXECUÇÃO DESFAVORÁVEL"
 
     if priority_score >= 75:
         return "ALTA PRIORIDADE"
@@ -711,6 +692,28 @@ def define_opportunity_profile(
         "score_trend",
         np.nan,
     )
+
+    signal_status = str(
+        row.get(
+            "signal_status",
+            "",
+        )
+    ).upper()
+
+    if signal_status == "ENTRADA FORTE":
+        return "ENTRADA PREMIUM COM CONFLUÊNCIA"
+
+    if signal_status == "ENTRADA APROVADA":
+        return "ENTRADA CONFIRMADA"
+
+    if signal_status == "PRÉ-ENTRADA — AGUARDAR VOLUME":
+        return "CONFIGURAÇÃO BOA — FALTA VOLUME"
+
+    if signal_status == "PRÉ-ENTRADA — MELHORAR RISCO/RETORNO":
+        return "CONFIGURAÇÃO BOA — RISCO/RETORNO INSUFICIENTE"
+
+    if signal_status == "AGUARDAR MELHOR RISCO/RETORNO":
+        return "AGUARDAR PREÇO MAIS FAVORÁVEL"
 
     timing_status = str(
         row.get(
@@ -808,6 +811,8 @@ def build_executive_table(
         "entry_probability",
         "estimated_upside_percent",
         "risk_reward_ratio",
+        "risk_reward_condition_approved",
+        "volume_entry_condition_approved",
         "institutional_classification",
         "technical_classification",
         "institutional_diagnosis",
@@ -872,6 +877,12 @@ class RankingEngine:
         self.pullback_watchlist = pd.DataFrame()
 
         self.breakout_watchlist = pd.DataFrame()
+
+        self.strong_entries = pd.DataFrame()
+
+        self.low_rr_watchlist = pd.DataFrame()
+
+        self.wait_volume_watchlist = pd.DataFrame()
 
     def calculate(
         self,
@@ -1001,7 +1012,10 @@ class RankingEngine:
         # ----------------------------------------------------
 
         watchlist_status = {
+            "PRÉ-ENTRADA — AGUARDAR VOLUME",
+            "PRÉ-ENTRADA — MELHORAR RISCO/RETORNO",
             "PRÉ-ENTRADA — AGUARDAR GATILHO",
+            "AGUARDAR MELHOR RISCO/RETORNO",
             "AGUARDAR PULLBACK",
             "AGUARDAR ROMPIMENTO",
             "OBSERVAÇÃO PRIORITÁRIA",
@@ -1026,9 +1040,58 @@ class RankingEngine:
             self.ranking.loc[
                 self.ranking[
                     "signal_status"
+                ].isin(
+                    {
+                        "PRÉ-ENTRADA — AGUARDAR VOLUME",
+                        "PRÉ-ENTRADA — MELHORAR RISCO/RETORNO",
+                        "PRÉ-ENTRADA — AGUARDAR GATILHO",
+                    }
+                )
+            ]
+            .copy()
+            .reset_index(
+                drop=True
+            )
+        )
+
+        self.strong_entries = (
+            self.ranking.loc[
+                self.ranking[
+                    "signal_status"
                 ]
                 ==
-                "PRÉ-ENTRADA — AGUARDAR GATILHO"
+                "ENTRADA FORTE"
+            ]
+            .copy()
+            .reset_index(
+                drop=True
+            )
+        )
+
+        self.low_rr_watchlist = (
+            self.ranking.loc[
+                self.ranking[
+                    "signal_status"
+                ].isin(
+                    {
+                        "PRÉ-ENTRADA — MELHORAR RISCO/RETORNO",
+                        "AGUARDAR MELHOR RISCO/RETORNO",
+                    }
+                )
+            ]
+            .copy()
+            .reset_index(
+                drop=True
+            )
+        )
+
+        self.wait_volume_watchlist = (
+            self.ranking.loc[
+                self.ranking[
+                    "signal_status"
+                ]
+                ==
+                "PRÉ-ENTRADA — AGUARDAR VOLUME"
             ]
             .copy()
             .reset_index(
@@ -1173,6 +1236,24 @@ class RankingEngine:
             encoding="utf-8-sig",
         )
 
+        self.strong_entries.to_csv(
+            STRONG_ENTRIES_FILE,
+            index=False,
+            encoding="utf-8-sig",
+        )
+
+        self.low_rr_watchlist.to_csv(
+            LOW_RR_FILE,
+            index=False,
+            encoding="utf-8-sig",
+        )
+
+        self.wait_volume_watchlist.to_csv(
+            WAIT_VOLUME_FILE,
+            index=False,
+            encoding="utf-8-sig",
+        )
+
         self.best_by_sector.to_csv(
             BEST_BY_SECTOR_FILE,
             index=False,
@@ -1266,6 +1347,33 @@ class RankingEngine:
 
         return self.breakout_watchlist.copy()
 
+    def get_strong_entries(
+        self,
+    ) -> pd.DataFrame:
+        """
+        Retorna entradas fortes.
+        """
+
+        return self.strong_entries.copy()
+
+    def get_low_rr_watchlist(
+        self,
+    ) -> pd.DataFrame:
+        """
+        Retorna ações que aguardam melhor risco/retorno.
+        """
+
+        return self.low_rr_watchlist.copy()
+
+    def get_wait_volume_watchlist(
+        self,
+    ) -> pd.DataFrame:
+        """
+        Retorna ações que aguardam confirmação de volume.
+        """
+
+        return self.wait_volume_watchlist.copy()
+
     def print_summary(self) -> None:
         """
         Exibe resumo do ranking.
@@ -1295,6 +1403,18 @@ class RankingEngine:
             self.breakout_watchlist
         )
 
+        strong_count = len(
+            self.strong_entries
+        )
+
+        low_rr_count = len(
+            self.low_rr_watchlist
+        )
+
+        wait_volume_count = len(
+            self.wait_volume_watchlist
+        )
+
         sectors = (
             self.ranking[
                 "setor"
@@ -1322,6 +1442,10 @@ class RankingEngine:
         )
 
         print(
+            f"Entradas fortes: {strong_count}"
+        )
+
+        print(
             f"Ações na watchlist: {watchlist_count}"
         )
 
@@ -1335,6 +1459,14 @@ class RankingEngine:
 
         print(
             f"Aguardar rompimento: {breakout_count}"
+        )
+
+        print(
+            f"Aguardar melhor risco/retorno: {low_rr_count}"
+        )
+
+        print(
+            f"Aguardar volume: {wait_volume_count}"
         )
 
         print(
