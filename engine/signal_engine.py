@@ -1023,16 +1023,19 @@ def calculate_star_rating(
     return "★☆☆☆☆"
 
 
-def estimate_upside_percent(
+def estimate_target_percent(
     row: pd.Series,
 ) -> float:
     """
-    Estima potencial de alta para swing usando:
-    - distância até a máxima de 52 semanas;
-    - ATR percentual;
-    - força de tendência.
+    Estima um alvo percentual plausível para swing de até 6 meses.
 
-    É uma referência quantitativa, não um preço-alvo.
+    O alvo combina:
+    - espaço até a máxima de 52 semanas;
+    - volatilidade pelo ATR;
+    - força de tendência;
+    - momentum.
+
+    É uma estimativa heurística e deve ser calibrada por backtest.
     """
 
     distance_high = row.get(
@@ -1050,62 +1053,149 @@ def estimate_upside_percent(
         np.nan,
     )
 
-    components = []
+    momentum_score = row.get(
+        "score_momentum",
+        np.nan,
+    )
 
-    if is_valid_number(
-        distance_high
-    ):
-        recovery_potential = max(
-            0.0,
-            min(
-                abs(
-                    float(
-                        distance_high
-                    )
-                ) * 0.60,
-                35.0,
-            )
-        )
-        components.append(
-            recovery_potential
-        )
+    if not is_valid_number(atr):
+        return 0.0
 
-    if is_valid_number(
-        atr
-    ):
-        components.append(
-            min(
-                float(atr) * 3,
+    atr = float(atr)
+
+    # Movimento mínimo esperado para um swing de várias semanas.
+    atr_target = min(
+        atr * 2.20,
+        22.0,
+    )
+
+    # Espaço de recuperação até a máxima de 52 semanas.
+    recovery_target = 0.0
+
+    if is_valid_number(distance_high):
+        distance_high = float(distance_high)
+
+        if distance_high < 0:
+            recovery_target = min(
+                abs(distance_high) * 0.75,
                 25.0,
             )
-        )
 
-    if is_valid_number(
-        trend_score
-    ):
-        components.append(
-            max(
-                0.0,
-                (
-                    float(
-                        trend_score
-                    )
-                    -
-                    50
-                ) * 0.20,
-            )
-        )
+    # Usa o maior dos dois como base, sem forçar um alvo exagerado.
+    target = max(
+        atr_target,
+        recovery_target,
+    )
 
-    if not components:
-        return 0.0
+    # Bônus moderado por tendência e momentum realmente fortes.
+    if is_valid_number(trend_score):
+        trend_score = float(trend_score)
+
+        if trend_score >= 85:
+            target += 1.5
+        elif trend_score >= 75:
+            target += 1.0
+
+    if is_valid_number(momentum_score):
+        momentum_score = float(momentum_score)
+
+        if momentum_score >= 90:
+            target += 1.0
+        elif momentum_score >= 80:
+            target += 0.5
 
     return round(
         float(
-            np.mean(
-                components
+            np.clip(
+                target,
+                0.0,
+                30.0,
             )
         ),
         2,
+    )
+
+
+def estimate_stop_percent(
+    row: pd.Series,
+) -> float:
+    """
+    Estima o risco percentual da operação.
+
+    O stop combina:
+    - 1,5 ATR como proteção contra ruído normal;
+    - piso mínimo de 4%;
+    - proximidade da SMA50 quando ela pode servir
+      como referência estrutural.
+
+    O objetivo é evitar o antigo modelo fixo de 2 ATR,
+    que tornava o risco excessivamente largo.
+    """
+
+    atr = row.get(
+        "atr_percentual",
+        np.nan,
+    )
+
+    distance_sma_50 = row.get(
+        "distancia_sma_50",
+        np.nan,
+    )
+
+    if not is_valid_number(atr):
+        return 0.0
+
+    atr = float(atr)
+
+    atr_stop = max(
+        atr * 1.50,
+        4.0,
+    )
+
+    stop = atr_stop
+
+    if is_valid_number(distance_sma_50):
+        distance_sma_50 = float(distance_sma_50)
+
+        if 0 <= distance_sma_50 <= 12:
+            structural_stop = (
+                distance_sma_50
+                +
+                atr * 0.75
+            )
+
+            structural_stop = max(
+                structural_stop,
+                4.0,
+            )
+
+            # Usa a referência mais próxima, evitando stop excessivo.
+            stop = min(
+                atr_stop,
+                structural_stop,
+            )
+
+    return round(
+        float(
+            np.clip(
+                stop,
+                4.0,
+                12.0,
+            )
+        ),
+        2,
+    )
+
+
+def estimate_upside_percent(
+    row: pd.Series,
+) -> float:
+    """
+    Mantém compatibilidade com o restante do projeto.
+    """
+
+    return estimate_target_percent(
+        row
     )
 
 
@@ -1113,41 +1203,33 @@ def estimate_risk_reward_ratio(
     row: pd.Series,
 ) -> float:
     """
-    Estima relação retorno/risco com base no upside e ATR.
+    Calcula a relação risco/retorno usando alvo e stop dinâmicos.
     """
 
-    upside = row.get(
-        "estimated_upside_percent",
-        0,
+    target = row.get(
+        "estimated_target_percent",
+        row.get(
+            "estimated_upside_percent",
+            np.nan,
+        ),
     )
 
-    atr = row.get(
-        "atr_percentual",
+    stop = row.get(
+        "estimated_stop_percent",
         np.nan,
     )
 
     if not (
-        is_valid_number(
-            upside
-        )
-        and is_valid_number(
-            atr
-        )
-        and float(
-            atr
-        ) > 0
+        is_valid_number(target)
+        and is_valid_number(stop)
+        and float(stop) > 0
     ):
         return 0.0
 
-    estimated_risk = max(
-        float(atr) * 2,
-        5.0,
-    )
-
     return round(
-        float(upside)
+        float(target)
         /
-        estimated_risk,
+        float(stop),
         2,
     )
 
@@ -1194,7 +1276,7 @@ def calculate_signal_approval(
     - timing classificado como ENTRAR AGORA;
     - Final Score mínimo;
     - risco técnico aceitável;
-    - relação risco/retorno >= 1,00;
+    - relação risco/retorno >= 1,20;
     - volume confirmado;
     - confirmação de mercado;
     - ausência de veto de extensão.
@@ -1596,7 +1678,7 @@ def list_signal_pending_conditions(
         )
         or float(
             institutional_score
-        ) < MIN_INSTITUTIONAL_SCORE
+        ) < MIN_INSTITUTIONAL_SCORE_REFINED
     ):
         pending.append(
             "Institutional Score abaixo do mínimo"
@@ -1652,7 +1734,7 @@ def list_signal_pending_conditions(
         )
         or float(
             final_score
-        ) < MIN_FINAL_SCORE
+        ) < MIN_FINAL_SCORE_REFINED
     ):
         pending.append(
             "Final Score abaixo do mínimo"
@@ -1932,7 +2014,7 @@ def generate_executive_decision(
     if status == "PRÉ-ENTRADA — MELHORAR RISCO/RETORNO":
         return (
             f"{ticker}: oportunidade próxima, porém a relação "
-            f"risco/retorno ainda está abaixo de 1,00."
+            f"risco/retorno ainda está abaixo de {MIN_RISK_REWARD_APPROVAL:.2f}."
         )
 
     if status == "AGUARDAR MELHOR RISCO/RETORNO":
@@ -2109,11 +2191,25 @@ class SignalEngine:
         )
 
         result[
-            "estimated_upside_percent"
+            "estimated_target_percent"
         ] = result.apply(
-            estimate_upside_percent,
+            estimate_target_percent,
             axis=1,
         )
+
+        result[
+            "estimated_stop_percent"
+        ] = result.apply(
+            estimate_stop_percent,
+            axis=1,
+        )
+
+        # Compatibilidade com relatórios antigos.
+        result[
+            "estimated_upside_percent"
+        ] = result[
+            "estimated_target_percent"
+        ]
 
         result[
             "risk_reward_ratio"
@@ -2483,6 +2579,8 @@ class SignalEngine:
                 "entry_probability",
                 "star_rating",
                 "estimated_upside_percent",
+                "estimated_target_percent",
+                "estimated_stop_percent",
                 "risk_reward_ratio",
                 "risk_reward_condition_approved",
                 "volume_entry_condition_approved",
