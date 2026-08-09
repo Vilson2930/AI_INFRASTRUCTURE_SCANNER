@@ -32,7 +32,6 @@ def anexar_pdf(msg, caminho):
     caminho = Path(caminho)
 
     if not caminho.exists():
-
         raise FileNotFoundError(
             f"PDF não encontrado: {caminho}"
         )
@@ -54,50 +53,76 @@ def anexar_pdf(msg, caminho):
 def main():
 
     smtp_server = os.getenv(
-        "SMTP_SERVER"
-    )
+        "SMTP_SERVER",
+        "",
+    ).strip()
 
-    smtp_port = int(
-        os.getenv(
-            "SMTP_PORT",
-            "587",
-        )
+    smtp_port_env = os.getenv(
+        "SMTP_PORT",
+        "",
+    ).strip()
+
+    smtp_port = (
+        int(smtp_port_env)
+        if smtp_port_env
+        else 587
     )
 
     smtp_user = os.getenv(
-        "SMTP_USER"
-    )
+        "SMTP_USER",
+        "",
+    ).strip()
 
     smtp_password = os.getenv(
-        "SMTP_PASSWORD"
-    )
+        "SMTP_PASSWORD",
+        "",
+    ).strip()
 
     email_to = os.getenv(
-        "EMAIL_TO"
-    )
+        "EMAIL_TO",
+        "",
+    ).strip()
 
     # --------------------------------------------------------
     # VALIDAÇÃO
     # --------------------------------------------------------
 
-    if not all(
-        [
-            smtp_server,
-            smtp_user,
-            smtp_password,
-            email_to,
-        ]
-    ):
+    configuracoes_ausentes = []
 
-        raise Exception(
-            "Configuração SMTP incompleta."
+    if not smtp_server:
+        configuracoes_ausentes.append(
+            "SMTP_SERVER"
+        )
+
+    if not smtp_user:
+        configuracoes_ausentes.append(
+            "SMTP_USER"
+        )
+
+    if not smtp_password:
+        configuracoes_ausentes.append(
+            "SMTP_PASSWORD"
+        )
+
+    if not email_to:
+        configuracoes_ausentes.append(
+            "EMAIL_TO"
+        )
+
+    if configuracoes_ausentes:
+
+        raise RuntimeError(
+            "Configuração SMTP incompleta. "
+            "Secrets ausentes ou vazios: "
+            + ", ".join(configuracoes_ausentes)
         )
 
     if not PDF_FILE.exists():
 
         raise FileNotFoundError(
             "Relatório institucional do "
-            "AI Infrastructure Scanner não encontrado."
+            "AI Infrastructure Scanner não encontrado: "
+            f"{PDF_FILE}"
         )
 
     # --------------------------------------------------------
@@ -130,37 +155,21 @@ O relatório institucional em PDF segue anexado.
 Conteúdo do relatório:
 
 • Resumo Executivo
-
 • Entradas Fortes
-
 • Entradas Aprovadas
-
 • Pré-Entradas
-
 • Ações aguardando volume
-
 • Ações aguardando gatilho
-
 • Ações aguardando pullback
-
 • Ranking das Melhores Oportunidades
-
 • Institutional Money Flow Score
-
 • Technical Entry Score
-
 • Entry Timing Score
-
 • Relação Risco / Retorno
-
 • Diagnóstico de Tendência
-
 • Qualidade Estrutural da Tendência
-
 • Risco de Extensão
-
 • Metodologia
-
 • Conclusão Executiva
 
 ---
@@ -193,16 +202,19 @@ Institutional Opportunity Report
     # LOG
     # --------------------------------------------------------
 
+    print("=" * 70)
     print(
-        "=" * 70
+        "ENVIANDO RELATÓRIO — "
+        "AI INFRASTRUCTURE SCANNER"
+    )
+    print("=" * 70)
+
+    print(
+        f"Servidor: {smtp_server}"
     )
 
     print(
-        "ENVIANDO RELATÓRIO — AI INFRASTRUCTURE SCANNER"
-    )
-
-    print(
-        "=" * 70
+        f"Porta   : {smtp_port}"
     )
 
     print(
@@ -220,9 +232,14 @@ Institutional Opportunity Report
     with smtplib.SMTP(
         smtp_server,
         smtp_port,
+        timeout=30,
     ) as server:
 
+        server.ehlo()
+
         server.starttls()
+
+        server.ehlo()
 
         server.login(
             smtp_user,
@@ -233,17 +250,11 @@ Institutional Opportunity Report
             msg
         )
 
-    print(
-        "=" * 70
-    )
-
+    print("=" * 70)
     print(
         "RELATÓRIO ENVIADO COM SUCESSO"
     )
-
-    print(
-        "=" * 70
-    )
+    print("=" * 70)
 
 
 # ============================================================
