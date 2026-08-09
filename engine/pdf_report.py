@@ -434,8 +434,16 @@ def criar_cards(metricas):
 # ============================================================
 
 def classificar_sinal(row):
+    """
+    Converte a classificação oficial do Signal Engine
+    para os grupos operacionais exibidos no PDF.
+
+    A fonte principal é a coluna `signal_status`, criada
+    pelo engine/signal_engine.py.
+    """
 
     candidatos = [
+        "signal_status",
         "sinal",
         "signal",
         "classificacao",
@@ -453,32 +461,46 @@ def classificar_sinal(row):
 
     texto = str(valor).upper().strip()
 
-    if "FORTE" in texto:
+    if not texto:
+        return "SEM CLASSIFICAÇÃO"
+
+    if texto == "ENTRADA FORTE":
         return "ENTRADA FORTE"
 
-    if (
-        "APROV" in texto
-        or texto == "ENTRADA"
-        or "BUY" in texto
-    ):
+    if texto == "ENTRADA APROVADA":
         return "ENTRADA APROVADA"
 
-    if "VOLUME" in texto:
+    if "AGUARDAR VOLUME" in texto:
         return "AGUARDAR VOLUME"
 
-    if "GATILHO" in texto:
+    if "AGUARDAR GATILHO" in texto:
         return "AGUARDAR GATILHO"
+
+    if "MELHORAR RISCO/RETORNO" in texto:
+        return "PRÉ-ENTRADA"
+
+    if texto.startswith("PRÉ-ENTRADA") or texto.startswith("PRE-ENTRADA"):
+        return "PRÉ-ENTRADA"
 
     if "PULLBACK" in texto:
         return "AGUARDAR PULLBACK"
 
-    if "PRÉ" in texto or "PRE-" in texto or "PRE " in texto:
-        return "PRÉ-ENTRADA"
+    if "ROMPIMENTO" in texto:
+        return "AGUARDAR ROMPIMENTO"
 
-    if texto:
+    if "AGUARDAR MELHOR RISCO/RETORNO" in texto:
+        return "AGUARDAR MELHOR RISCO/RETORNO"
+
+    if texto in {
+        "OBSERVAÇÃO PRIORITÁRIA",
+        "OBSERVAÇÃO",
+        "TÉCNICA BOA — FLUXO INSUFICIENTE",
+        "NÃO COMPRAR",
+        "MUITO ESTICADA — NÃO PERSEGUIR",
+    }:
         return texto
 
-    return "SEM CLASSIFICAÇÃO"
+    return texto
 
 
 # ============================================================
@@ -808,13 +830,15 @@ def gerar_pdf_institucional():
     # ESCOLHER BASE PRINCIPAL
     # --------------------------------------------------------
 
-    if not ranking.empty:
+    if not signals.empty:
+
+        # signals.csv é a saída final do Signal Engine e deve ser
+        # a fonte principal do relatório operacional.
+        base = signals.copy()
+
+    elif not ranking.empty:
 
         base = ranking.copy()
-
-    elif not signals.empty:
-
-        base = signals.copy()
 
     elif not timing.empty:
 
@@ -838,10 +862,10 @@ def gerar_pdf_institucional():
     if ticker_base:
 
         bases_extra = [
+            ranking,
             timing,
             tecnico,
             institucional,
-            signals,
         ]
 
         for extra in bases_extra:
@@ -1033,8 +1057,12 @@ def gerar_pdf_institucional():
             len(aprovadas),
         ),
         (
-            "Pré-entradas",
-            len(pre_entradas),
+            "Aguardar volume",
+            len(aguardar_volume),
+        ),
+        (
+            "Aguardar gatilho",
+            len(aguardar_gatilho),
         ),
         (
             "Aguardar pullback",
