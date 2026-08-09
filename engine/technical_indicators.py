@@ -24,6 +24,11 @@
 # - Qualidade da tendência
 # - Distância do topo histórico (ATH)
 # - Score de liquidez institucional
+# - Eficiência da tendência (20 pregões)
+# - Estabilidade dos candles
+# - Qualidade dos pullbacks
+# - Expansão de volatilidade
+# - Trend Quality Score estrutural (0–100)
 # ============================================================
 
 from __future__ import annotations
@@ -675,7 +680,10 @@ def calculate_trend_quality(
     df: pd.DataFrame,
 ) -> pd.Series:
     """
-    Classifica a qualidade da tendência para swing trade.
+    Classifica o regime estrutural básico da tendência para swing trade.
+
+    Esta classificação é mantida por compatibilidade.
+    O novo trend_quality_score mede a qualidade estrutural em escala 0–100.
 
     Retorna:
     - TENDÊNCIA SAUDÁVEL
@@ -766,6 +774,318 @@ def calculate_liquidity_score(
     score = score.mask(average_dollar_volume >= 1_000_000_000, 100.0)
 
     return score
+
+
+# ============================================================
+# QUALIDADE ESTRUTURAL DA TENDÊNCIA
+# ============================================================
+
+def calculate_trend_efficiency_ratio(
+    close: pd.Series,
+    window: int = 20,
+) -> pd.Series:
+    """
+    Mede quão direcional foi o movimento.
+    100 = tendência limpa; 0 = muito ruído/lateralização.
+    """
+
+    net_change = (
+        close - close.shift(window)
+    ).abs()
+
+    total_path = (
+        close.diff()
+        .abs()
+        .rolling(
+            window,
+            min_periods=max(5, window // 2),
+        )
+        .sum()
+    )
+
+    efficiency = (
+        safe_divide(
+            net_change,
+            total_path,
+        )
+        * 100
+    )
+
+    return efficiency.clip(
+        lower=0,
+        upper=100,
+    )
+
+
+def calculate_candle_stability_score(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    atr: pd.Series,
+    window: int = 20,
+) -> pd.Series:
+    """
+    Mede a estabilidade do comportamento dos candles.
+    Penaliza True Range irregular e candles muito maiores que o ATR.
+    """
+
+    true_range = calculate_true_range(
+        high=high,
+        low=low,
+        close=close,
+    )
+
+    normalized_range = safe_divide(
+        true_range,
+        atr,
+    )
+
+    range_std = (
+        normalized_range
+        .rolling(
+            window,
+            min_periods=max(8, window // 2),
+        )
+        .std()
+    )
+
+    extreme_candle_frequency = (
+        (normalized_range >= 1.80)
+        .astype(float)
+        .rolling(
+            window,
+            min_periods=max(8, window // 2),
+        )
+        .mean()
+    )
+
+    score = (
+        100
+        - range_std.fillna(0.50) * 45
+        - extreme_candle_frequency.fillna(0.20) * 40
+    )
+
+    return score.clip(
+        lower=0,
+        upper=100,
+    )
+
+
+def calculate_volatility_expansion_score(
+    atr_percent: pd.Series,
+    window: int = 60,
+) -> pd.Series:
+    """
+    Mede expansão do ATR% frente à mediana recente.
+    Quanto maior a nota, maior a expansão de volatilidade.
+    """
+
+    baseline = (
+        atr_percent
+        .rolling(
+            window,
+            min_periods=max(20, window // 3),
+        )
+        .median()
+    )
+
+    ratio = safe_divide(
+        atr_percent,
+        baseline,
+    )
+
+    score = pd.Series(
+        20.0,
+        index=atr_percent.index,
+        dtype=float,
+    )
+
+    score = score.mask(ratio > 1.00, 30.0)
+    score = score.mask(ratio > 1.15, 45.0)
+    score = score.mask(ratio > 1.30, 60.0)
+    score = score.mask(ratio > 1.50, 78.0)
+    score = score.mask(ratio > 1.75, 92.0)
+    score = score.mask(ratio > 2.00, 100.0)
+
+    return score.where(
+        ratio.notna(),
+        np.nan,
+    )
+
+
+def calculate_pullback_quality_score(
+    close: pd.Series,
+    sma_20: pd.Series,
+    sma_50: pd.Series,
+    high_20d: pd.Series,
+    atr_percent: pd.Series,
+) -> pd.Series:
+    """
+    Avalia se a correção recente é construtiva dentro da tendência.
+    """
+
+    distance_high = (
+        close / high_20d - 1
+    ) * 100
+
+    pullback_depth = (
+        distance_high.abs()
+    )
+
+    depth_in_atr = safe_divide(
+        pullback_depth,
+        atr_percent,
+    )
+
+    distance_sma20 = (
+        close / sma_20 - 1
+    ) * 100
+
+    above_sma50 = (
+        close >= sma_50
+    )
+
+    score = pd.Series(
+        45.0,
+        index=close.index,
+        dtype=float,
+    )
+
+    score = score.mask(
+        (depth_in_atr >= 0.50)
+        & (depth_in_atr <= 2.50)
+        & above_sma50,
+        95.0,
+    )
+
+    score = score.mask(
+        (depth_in_atr >= 0.15)
+        & (depth_in_atr < 0.50)
+        & above_sma50,
+        75.0,
+    )
+
+    score = score.mask(
+        (depth_in_atr > 2.50)
+        & (depth_in_atr <= 3.50)
+        & above_sma50,
+        70.0,
+    )
+
+    score = score.mask(
+        (depth_in_atr < 0.15)
+        & above_sma50,
+        55.0,
+    )
+
+    score = score.mask(
+        ~above_sma50,
+        25.0,
+    )
+
+    score = score.mask(
+        depth_in_atr > 4.50,
+        15.0,
+    )
+
+    score = (
+        score
+        + (distance_sma20.abs() <= 4.0).astype(float) * 5.0
+    )
+
+    return score.clip(
+        lower=0,
+        upper=100,
+    )
+
+
+def calculate_structural_trend_quality_score(
+    efficiency_ratio: pd.Series,
+    candle_stability_score: pd.Series,
+    pullback_quality_score: pd.Series,
+    volatility_expansion_score: pd.Series,
+    persistence_sma50: pd.Series,
+    persistence_sma200: pd.Series,
+) -> pd.Series:
+    """
+    Score estrutural da tendência em escala 0–100.
+    """
+
+    components = pd.concat(
+        [
+            efficiency_ratio.rename("efficiency"),
+            candle_stability_score.rename("stability"),
+            pullback_quality_score.rename("pullback"),
+            (100 - volatility_expansion_score).rename("volatility_control"),
+            persistence_sma50.rename("persistence_50"),
+            persistence_sma200.rename("persistence_200"),
+        ],
+        axis=1,
+    )
+
+    weights = pd.Series(
+        {
+            "efficiency": 0.25,
+            "stability": 0.20,
+            "pullback": 0.15,
+            "volatility_control": 0.15,
+            "persistence_50": 0.15,
+            "persistence_200": 0.10,
+        }
+    )
+
+    weighted_sum = (
+        components.mul(
+            weights,
+            axis=1,
+        )
+        .sum(
+            axis=1,
+            min_count=1,
+        )
+    )
+
+    available_weight = (
+        components.notna()
+        .mul(
+            weights,
+            axis=1,
+        )
+        .sum(axis=1)
+        .replace(0, np.nan)
+    )
+
+    score = (
+        weighted_sum
+        / available_weight
+    )
+
+    return score.clip(
+        lower=0,
+        upper=100,
+    )
+
+
+def classify_structural_trend_quality(
+    score: pd.Series,
+) -> pd.Series:
+    """
+    Classifica o Trend Quality Score estrutural.
+    """
+
+    result = pd.Series(
+        "INDEFINIDA",
+        index=score.index,
+        dtype="object",
+    )
+
+    result = result.mask(score >= 85, "EXCELENTE")
+    result = result.mask((score >= 72) & (score < 85), "SAUDÁVEL")
+    result = result.mask((score >= 58) & (score < 72), "MODERADA")
+    result = result.mask((score >= 42) & (score < 58), "INSTÁVEL")
+    result = result.mask(score < 42, "FRACA")
+
+    return result
 
 
 # ============================================================
@@ -1111,6 +1431,67 @@ def calculate_ticker_indicators(
     df["distancia_maxima_20d"] = (
         df["distance_from_20d_high"]
     )
+
+    # --------------------------------------------------------
+    # QUALIDADE ESTRUTURAL DA TENDÊNCIA
+    # --------------------------------------------------------
+
+    df["trend_efficiency_ratio"] = (
+        calculate_trend_efficiency_ratio(
+            close=close,
+            window=20,
+        )
+    )
+
+    df["candle_stability_score"] = (
+        calculate_candle_stability_score(
+            high=high,
+            low=low,
+            close=close,
+            atr=df["atr_14"],
+            window=20,
+        )
+    )
+
+    df["volatility_expansion_score"] = (
+        calculate_volatility_expansion_score(
+            atr_percent=df["atr_percentual"],
+            window=60,
+        )
+    )
+
+    df["pullback_quality_score"] = (
+        calculate_pullback_quality_score(
+            close=close,
+            sma_20=df["sma_20"],
+            sma_50=df["sma_50"],
+            high_20d=df["high_20d"],
+            atr_percent=df["atr_percentual"],
+        )
+    )
+
+    df["trend_quality_score"] = (
+        calculate_structural_trend_quality_score(
+            efficiency_ratio=df["trend_efficiency_ratio"],
+            candle_stability_score=df["candle_stability_score"],
+            pullback_quality_score=df["pullback_quality_score"],
+            volatility_expansion_score=df["volatility_expansion_score"],
+            persistence_sma50=df["persistencia_acima_sma50_60d"],
+            persistence_sma200=df["persistencia_acima_sma200_120d"],
+        )
+    )
+
+    df["trend_structure_quality"] = (
+        classify_structural_trend_quality(
+            df["trend_quality_score"]
+        )
+    )
+
+    df["eficiencia_tendencia"] = df["trend_efficiency_ratio"]
+    df["estabilidade_candles"] = df["candle_stability_score"]
+    df["qualidade_pullback"] = df["pullback_quality_score"]
+    df["expansao_volatilidade"] = df["volatility_expansion_score"]
+    df["qualidade_estrutural_tendencia"] = df["trend_structure_quality"]
 
     # --------------------------------------------------------
     # MÁXIMA E MÍNIMA DE 52 SEMANAS
@@ -1518,6 +1899,11 @@ def calculate_ticker_indicators(
         "persistencia_acima_sma50_60d",
         "persistencia_acima_sma200_120d",
         "score_liquidez_institucional",
+        "trend_efficiency_ratio",
+        "candle_stability_score",
+        "pullback_quality_score",
+        "volatility_expansion_score",
+        "trend_quality_score",
         "extension_score",
     ]
 
@@ -1824,6 +2210,12 @@ if __name__ == "__main__":
         "persistencia_acima_sma200_120d",
         "qualidade_tendencia",
         "score_liquidez_institucional",
+        "trend_efficiency_ratio",
+        "candle_stability_score",
+        "pullback_quality_score",
+        "volatility_expansion_score",
+        "trend_quality_score",
+        "trend_structure_quality",
         "volume_relativo_5d",
         "volume_relativo_20d",
         "weekly_extension_risk",
