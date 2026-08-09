@@ -46,6 +46,10 @@
 # - timing_status
 # - pullback_probability
 # - parabolic_risk
+# - acceleration_factor_5d
+# - acceleration_factor_10d
+# - explosion_score
+# - extension_quality
 # - timing_confidence
 # - timing_approved
 # - timing_positive_factors
@@ -100,6 +104,16 @@ MAX_ACCEPTABLE_DISTANCE_SMA20 = 12.0
 MAX_ACCEPTABLE_RETURN_5D = 20.0
 
 MAX_ACCEPTABLE_RETURN_10D = 35.0
+
+MAX_ACCEPTABLE_ACCELERATION_5D = 3.00
+MAX_ACCEPTABLE_ACCELERATION_10D = 4.50
+MAX_ACCEPTABLE_EXPLOSION_SCORE = 72.0
+
+STRONG_ACCELERATION_5D = 2.50
+EXTREME_ACCELERATION_5D = 3.50
+
+STRONG_ACCELERATION_10D = 3.50
+EXTREME_ACCELERATION_10D = 5.00
 
 
 MINIMUM_REQUIRED_COLUMNS = {
@@ -915,42 +929,130 @@ def score_risk_timing(
 
 
 # ============================================================
-# EXTENSÃO E PULLBACK
+# EXTENSÃO NORMALIZADA PELA VOLATILIDADE
 # ============================================================
 
-def calculate_pullback_probability(
+def calculate_acceleration_factor(
+    return_percent: float,
+    atr_percent: float,
+) -> float:
+    """
+    Mede quantos ATRs o preço percorreu no período.
+
+    Exemplo:
+    retorno 5d = 12%
+    ATR = 4%
+    fator = 3,0 ATR
+
+    Quanto maior o fator, maior a aceleração relativa
+    à volatilidade normal do ativo.
+    """
+
+    if not (
+        is_valid_number(return_percent)
+        and is_valid_number(atr_percent)
+    ):
+        return np.nan
+
+    atr = float(atr_percent)
+
+    if atr <= 0:
+        return np.nan
+
+    return round(
+        float(return_percent) / atr,
+        3,
+    )
+
+
+def score_acceleration_quality(
+    acceleration_factor: float,
+) -> float:
+    """
+    Avalia a qualidade da aceleração.
+
+    A melhor região é força positiva sem explosão.
+    """
+
+    if not is_valid_number(
+        acceleration_factor
+    ):
+        return 45.0
+
+    value = float(
+        acceleration_factor
+    )
+
+    if -0.75 <= value <= 1.25:
+        return 100.0
+
+    if 1.25 < value <= 2.00:
+        return 90.0
+
+    if 2.00 < value <= 2.50:
+        return 72.0
+
+    if 2.50 < value <= 3.00:
+        return 48.0
+
+    if 3.00 < value <= 3.50:
+        return 25.0
+
+    if value > 3.50:
+        return 5.0
+
+    if -1.50 <= value < -0.75:
+        return 72.0
+
+    if -2.50 <= value < -1.50:
+        return 45.0
+
+    return 20.0
+
+
+def calculate_explosion_score(
     row: pd.Series,
 ) -> float:
     """
-    Estima a probabilidade heurística de pullback.
+    Mede a extensão/explosão do movimento recente.
 
-    Não representa probabilidade estatística calibrada.
+    Combina:
+    - aceleração 5d normalizada pelo ATR;
+    - aceleração 10d normalizada pelo ATR;
+    - distância da SMA20;
+    - posição perto da máxima recente;
+    - RSI;
+    - flags já existentes de extensão/parabolicidade.
+
+    0–25   -> movimento saudável
+    25–50  -> movimento forte
+    50–72  -> movimento esticado
+    72–100 -> movimento explosivo
     """
 
-    probability = 20.0
-
-    return_5d = row.get(
-        "retorno_5d",
+    atr = row.get(
+        "atr_percentual",
         np.nan,
     )
 
-    return_10d = row.get(
-        "retorno_10d",
-        np.nan,
+    acc5 = calculate_acceleration_factor(
+        row.get(
+            "retorno_5d",
+            np.nan,
+        ),
+        atr,
+    )
+
+    acc10 = calculate_acceleration_factor(
+        row.get(
+            "retorno_10d",
+            np.nan,
+        ),
+        atr,
     )
 
     distance_sma20 = row.get(
         "distancia_sma_20",
-        np.nan,
-    )
-
-    rsi = row.get(
-        "rsi_14",
-        np.nan,
-    )
-
-    atr = row.get(
-        "atr_percentual",
         np.nan,
     )
 
@@ -959,71 +1061,237 @@ def calculate_pullback_probability(
         np.nan,
     )
 
-    if is_valid_number(
-        return_5d
-    ):
+    rsi = row.get(
+        "rsi_14",
+        np.nan,
+    )
 
-        return_5d = float(
-            return_5d
+    components: list[float] = []
+    weights: list[float] = []
+
+    # aceleração 5d — principal fator
+    if is_valid_number(acc5):
+        value = float(acc5)
+
+        if value <= 1.25:
+            score = 10.0
+        elif value <= 2.00:
+            score = 25.0
+        elif value <= 2.50:
+            score = 45.0
+        elif value <= 3.00:
+            score = 65.0
+        elif value <= 3.50:
+            score = 82.0
+        else:
+            score = 100.0
+
+        components.append(score)
+        weights.append(0.30)
+
+    # aceleração 10d
+    if is_valid_number(acc10):
+        value = float(acc10)
+
+        if value <= 1.75:
+            score = 10.0
+        elif value <= 2.50:
+            score = 25.0
+        elif value <= 3.50:
+            score = 45.0
+        elif value <= 4.50:
+            score = 68.0
+        elif value <= 5.00:
+            score = 85.0
+        else:
+            score = 100.0
+
+        components.append(score)
+        weights.append(0.20)
+
+    # distância SMA20
+    if is_valid_number(distance_sma20):
+        value = float(distance_sma20)
+
+        if value <= 4:
+            score = 10.0
+        elif value <= 8:
+            score = 30.0
+        elif value <= 12:
+            score = 55.0
+        elif value <= 18:
+            score = 80.0
+        else:
+            score = 100.0
+
+        components.append(score)
+        weights.append(0.20)
+
+    # proximidade da máxima recente
+    if is_valid_number(distance_recent_high):
+        value = float(distance_recent_high)
+
+        if value <= -8:
+            score = 10.0
+        elif value <= -3:
+            score = 25.0
+        elif value <= -1:
+            score = 45.0
+        else:
+            score = 65.0
+
+        components.append(score)
+        weights.append(0.10)
+
+    # RSI
+    if is_valid_number(rsi):
+        value = float(rsi)
+
+        if value <= 65:
+            score = 10.0
+        elif value <= 70:
+            score = 35.0
+        elif value <= 74:
+            score = 60.0
+        elif value <= 80:
+            score = 82.0
+        else:
+            score = 100.0
+
+        components.append(score)
+        weights.append(0.10)
+
+    # flags existentes
+    flag_score = 0.0
+
+    if boolean_value(
+        row.get(
+            "weekly_extension_risk",
+            False,
+        )
+    ):
+        flag_score += 45.0
+
+    if boolean_value(
+        row.get(
+            "parabolic_move_risk",
+            False,
+        )
+    ):
+        flag_score += 55.0
+
+    flag_score = min(
+        flag_score,
+        100.0,
+    )
+
+    components.append(flag_score)
+    weights.append(0.10)
+
+    if not components:
+        return 40.0
+
+    return round(
+        clip_score(
+            np.average(
+                components,
+                weights=weights,
+            )
+        ),
+        2,
+    )
+
+
+def classify_extension_quality(
+    explosion_score: float,
+) -> str:
+    """
+    Classifica a extensão do movimento.
+    """
+
+    if not is_valid_number(
+        explosion_score
+    ):
+        return "INDEFINIDA"
+
+    score = float(
+        explosion_score
+    )
+
+    if score < 25:
+        return "SAUDÁVEL"
+
+    if score < 50:
+        return "FORTE"
+
+    if score < 72:
+        return "ESTICADA"
+
+    return "EXPLOSIVA"
+
+
+# ============================================================
+# EXTENSÃO E PULLBACK
+# ============================================================
+
+def calculate_pullback_probability(
+    row: pd.Series,
+) -> float:
+    """
+    Estima risco heurístico de pullback.
+
+    IMPORTANTE:
+    não representa probabilidade estatística calibrada.
+
+    A versão refinada usa principalmente extensão
+    normalizada pela volatilidade, evitando tratar
+    todos os ativos com os mesmos limites absolutos.
+    """
+
+    probability = 15.0
+
+    explosion_score = row.get(
+        "explosion_score",
+        np.nan,
+    )
+
+    if not is_valid_number(
+        explosion_score
+    ):
+        explosion_score = calculate_explosion_score(
+            row
         )
 
-        if return_5d >= 30:
-            probability += 35
-
-        elif return_5d >= 20:
-            probability += 25
-
-        elif return_5d >= 15:
-            probability += 15
-
     if is_valid_number(
-        return_10d
+        explosion_score
     ):
 
-        return_10d = float(
-            return_10d
+        explosion_score = float(
+            explosion_score
         )
 
-        if return_10d >= 35:
-            probability += 25
+        # converte extensão em risco incremental
+        if explosion_score >= 85:
+            probability += 55
 
-        elif return_10d >= 25:
-            probability += 15
+        elif explosion_score >= 72:
+            probability += 40
 
-    if is_valid_number(
-        distance_sma20
-    ):
+        elif explosion_score >= 60:
+            probability += 28
 
-        distance_sma20 = float(
-            distance_sma20
-        )
-
-        if distance_sma20 >= 18:
-            probability += 25
-
-        elif distance_sma20 >= 12:
+        elif explosion_score >= 50:
             probability += 18
 
-        elif distance_sma20 >= 8:
+        elif explosion_score >= 35:
             probability += 8
 
-    if is_valid_number(
-        rsi
-    ):
+    atr = row.get(
+        "atr_percentual",
+        np.nan,
+    )
 
-        rsi = float(
-            rsi
-        )
-
-        if rsi >= 80:
-            probability += 25
-
-        elif rsi >= 74:
-            probability += 15
-
-        elif rsi >= 70:
-            probability += 8
-
+    # volatilidade excessiva continua sendo risco adicional
     if is_valid_number(
         atr
     ):
@@ -1032,36 +1300,22 @@ def calculate_pullback_probability(
             atr
         )
 
-        if atr >= 10:
+        if atr >= 13:
+            probability += 15
+
+        elif atr >= 10:
             probability += 10
 
         elif atr >= 7:
             probability += 5
 
-    if is_valid_number(
-        distance_recent_high
-    ):
-
-        if float(
-            distance_recent_high
-        ) >= -1:
-            probability += 8
-
     if boolean_value(
         row.get(
-            "weekly_extension_risk",
+            "pullback_required",
             False,
         )
     ):
-        probability += 12
-
-    if boolean_value(
-        row.get(
-            "parabolic_move_risk",
-            False,
-        )
-    ):
-        probability += 25
+        probability += 15
 
     return round(
         clip_score(
@@ -1196,20 +1450,83 @@ def calculate_entry_timing_score(
 ) -> float:
     """
     Calcula o score final de timing.
+
+    A versão refinada reduz a duplicidade entre retorno,
+    RSI e distância das médias e dá peso explícito à
+    qualidade da extensão do movimento.
     """
+
+    atr = row.get(
+        "atr_percentual",
+        np.nan,
+    )
+
+    acceleration_5d = row.get(
+        "acceleration_factor_5d",
+        np.nan,
+    )
+
+    acceleration_10d = row.get(
+        "acceleration_factor_10d",
+        np.nan,
+    )
+
+    explosion_score = row.get(
+        "explosion_score",
+        np.nan,
+    )
+
+    if not is_valid_number(
+        acceleration_5d
+    ):
+        acceleration_5d = calculate_acceleration_factor(
+            row.get(
+                "retorno_5d",
+                np.nan,
+            ),
+            atr,
+        )
+
+    if not is_valid_number(
+        acceleration_10d
+    ):
+        acceleration_10d = calculate_acceleration_factor(
+            row.get(
+                "retorno_10d",
+                np.nan,
+            ),
+            atr,
+        )
+
+    if not is_valid_number(
+        explosion_score
+    ):
+        explosion_score = calculate_explosion_score(
+            row
+        )
+
+    extension_quality_score = (
+        100.0
+        -
+        float(explosion_score)
+        if is_valid_number(
+            explosion_score
+        )
+        else 50.0
+    )
 
     base_score = weighted_average_available(
         values=[
-            score_return_5d(
-                row.get(
-                    "retorno_5d"
-                )
+            # extensão / aceleração
+            score_acceleration_quality(
+                acceleration_5d
             ),
-            score_return_10d(
-                row.get(
-                    "retorno_10d"
-                )
+            score_acceleration_quality(
+                acceleration_10d
             ),
+            extension_quality_score,
+
+            # posição do preço
             score_distance_sma20(
                 row.get(
                     "distancia_sma_20"
@@ -1220,6 +1537,8 @@ def calculate_entry_timing_score(
                     "distancia_maxima_20d"
                 )
             ),
+
+            # momentum
             score_rsi_timing(
                 row.get(
                     "rsi_14"
@@ -1233,6 +1552,8 @@ def calculate_entry_timing_score(
                     "macd_hist_variacao"
                 ),
             ),
+
+            # tendência
             score_adx_timing(
                 row.get(
                     "adx_14"
@@ -1244,6 +1565,8 @@ def calculate_entry_timing_score(
                     "minus_di_14"
                 ),
             ),
+
+            # fluxo
             score_volume_timing(
                 row.get(
                     "volume_relativo_5d"
@@ -1255,48 +1578,75 @@ def calculate_entry_timing_score(
                     "cmf_20"
                 ),
             ),
+
+            # risco
             score_risk_timing(
-                row.get(
-                    "atr_percentual"
-                )
+                atr
             ),
         ],
         weights=[
+            0.12,
+            0.08,
             0.20,
-            0.15,
-            0.15,
-            0.10,
+            0.12,
+            0.08,
             0.10,
             0.08,
             0.07,
-            0.05,
-            0.10,
+            0.08,
+            0.07,
         ],
         fallback=40.0,
     )
 
     penalty = 0.0
 
-    pullback_probability = calculate_pullback_probability(
-        row
+    pullback_probability = row.get(
+        "pullback_probability",
+        np.nan,
     )
 
-    if pullback_probability >= 80:
-        penalty += 30
-
-    elif pullback_probability >= 65:
-        penalty += 20
-
-    elif pullback_probability >= 50:
-        penalty += 10
-
-    if boolean_value(
-        row.get(
-            "weekly_extension_risk",
-            False,
-        )
+    if not is_valid_number(
+        pullback_probability
     ):
-        penalty += 10
+        pullback_probability = calculate_pullback_probability(
+            row
+        )
+
+    if is_valid_number(
+        pullback_probability
+    ):
+
+        pullback_probability = float(
+            pullback_probability
+        )
+
+        if pullback_probability >= 80:
+            penalty += 25
+
+        elif pullback_probability >= 65:
+            penalty += 15
+
+        elif pullback_probability >= 50:
+            penalty += 8
+
+    # penalidade adicional apenas para explosão real
+    if is_valid_number(
+        explosion_score
+    ):
+
+        explosion_score = float(
+            explosion_score
+        )
+
+        if explosion_score >= 85:
+            penalty += 20
+
+        elif explosion_score >= 72:
+            penalty += 12
+
+        elif explosion_score >= 60:
+            penalty += 5
 
     if boolean_value(
         row.get(
@@ -1304,7 +1654,7 @@ def calculate_entry_timing_score(
             False,
         )
     ):
-        penalty += 25
+        penalty += 15
 
     if boolean_value(
         row.get(
@@ -1312,26 +1662,7 @@ def calculate_entry_timing_score(
             False,
         )
     ):
-        penalty += 10
-
-    extension_score = row.get(
-        "extension_score",
-        np.nan,
-    )
-
-    if is_valid_number(
-        extension_score
-    ):
-
-        extension_score = float(
-            extension_score
-        )
-
-        if extension_score < 40:
-            penalty += 20
-
-        elif extension_score < 60:
-            penalty += 10
+        penalty += 8
 
     return round(
         clip_score(
@@ -1415,6 +1746,9 @@ def timing_risk_is_acceptable(
 ) -> bool:
     """
     Confirma se o ativo não está excessivamente esticado.
+
+    A decisão usa extensão normalizada pelo ATR, e não
+    apenas limites absolutos de retorno.
     """
 
     pullback_probability = row.get(
@@ -1444,13 +1778,18 @@ def timing_risk_is_acceptable(
         np.nan,
     )
 
-    return_5d = row.get(
-        "retorno_5d",
+    acceleration_5d = row.get(
+        "acceleration_factor_5d",
         np.nan,
     )
 
-    return_10d = row.get(
-        "retorno_10d",
+    acceleration_10d = row.get(
+        "acceleration_factor_10d",
+        np.nan,
+    )
+
+    explosion_score = row.get(
+        "explosion_score",
         np.nan,
     )
 
@@ -1509,24 +1848,35 @@ def timing_risk_is_acceptable(
 
         (
             not is_valid_number(
-                return_5d
+                acceleration_5d
             )
             or float(
-                return_5d
+                acceleration_5d
             )
             <=
-            MAX_ACCEPTABLE_RETURN_5D
+            MAX_ACCEPTABLE_ACCELERATION_5D
         ),
 
         (
             not is_valid_number(
-                return_10d
+                acceleration_10d
             )
             or float(
-                return_10d
+                acceleration_10d
             )
             <=
-            MAX_ACCEPTABLE_RETURN_10D
+            MAX_ACCEPTABLE_ACCELERATION_10D
+        ),
+
+        (
+            not is_valid_number(
+                explosion_score
+            )
+            or float(
+                explosion_score
+            )
+            <
+            MAX_ACCEPTABLE_EXPLOSION_SCORE
         ),
     ]
 
@@ -1618,15 +1968,39 @@ def define_timing_status(
         np.nan,
     )
 
+    explosion_score = row.get(
+        "explosion_score",
+        np.nan,
+    )
+
+    extension_quality = str(
+        row.get(
+            "extension_quality",
+            "",
+        )
+    ).upper()
+
     if timing_approved:
         return "ENTRAR AGORA"
 
-    if parabolic_risk == "EXTREMO":
+    if (
+        parabolic_risk == "EXTREMO"
+        or extension_quality == "EXPLOSIVA"
+        or (
+            is_valid_number(
+                explosion_score
+            )
+            and float(
+                explosion_score
+            ) >= 85
+        )
+    ):
         return "MUITO ESTICADA"
 
     if (
         parabolic_risk == "ALTO"
         or pullback_probability >= 65
+        or extension_quality == "ESTICADA"
         or boolean_value(
             row.get(
                 "pullback_required",
@@ -1879,6 +2253,32 @@ def list_timing_pending_conditions(
             "faltam confirmações independentes"
         )
 
+    acceleration_5d = row.get(
+        "acceleration_factor_5d",
+        np.nan,
+    )
+
+    explosion_score = row.get(
+        "explosion_score",
+        np.nan,
+    )
+
+    if (
+        is_valid_number(acceleration_5d)
+        and float(acceleration_5d) > 2.50
+    ):
+        pending.append(
+            "aguardar desaceleração do movimento recente"
+        )
+
+    if (
+        is_valid_number(explosion_score)
+        and float(explosion_score) >= 50
+    ):
+        pending.append(
+            "aguardar redução da extensão do preço"
+        )
+
     return "; ".join(
         dict.fromkeys(
             pending
@@ -1967,6 +2367,32 @@ def list_timing_rejection_reasons(
     ):
         reasons.append(
             "RSI extremamente elevado"
+        )
+
+    acceleration_5d = row.get(
+        "acceleration_factor_5d",
+        np.nan,
+    )
+
+    explosion_score = row.get(
+        "explosion_score",
+        np.nan,
+    )
+
+    if (
+        is_valid_number(acceleration_5d)
+        and float(acceleration_5d) >= EXTREME_ACCELERATION_5D
+    ):
+        reasons.append(
+            "aceleração extrema em 5 pregões"
+        )
+
+    if (
+        is_valid_number(explosion_score)
+        and float(explosion_score) >= 85
+    ):
+        reasons.append(
+            "movimento explosivo"
         )
 
     return "; ".join(
@@ -2102,6 +2528,55 @@ class EntryTimingEngine:
             .reset_index(
                 drop=True
             )
+        )
+
+        latest[
+            "acceleration_factor_5d"
+        ] = latest.apply(
+            lambda row:
+                calculate_acceleration_factor(
+                    row.get(
+                        "retorno_5d",
+                        np.nan,
+                    ),
+                    row.get(
+                        "atr_percentual",
+                        np.nan,
+                    ),
+                ),
+            axis=1,
+        )
+
+        latest[
+            "acceleration_factor_10d"
+        ] = latest.apply(
+            lambda row:
+                calculate_acceleration_factor(
+                    row.get(
+                        "retorno_10d",
+                        np.nan,
+                    ),
+                    row.get(
+                        "atr_percentual",
+                        np.nan,
+                    ),
+                ),
+            axis=1,
+        )
+
+        latest[
+            "explosion_score"
+        ] = latest.apply(
+            calculate_explosion_score,
+            axis=1,
+        )
+
+        latest[
+            "extension_quality"
+        ] = latest[
+            "explosion_score"
+        ].apply(
+            classify_extension_quality
         )
 
         latest[
@@ -2405,6 +2880,10 @@ class EntryTimingEngine:
                 "timing_confidence",
                 "retorno_5d",
                 "retorno_10d",
+                "acceleration_factor_5d",
+                "acceleration_factor_10d",
+                "explosion_score",
+                "extension_quality",
                 "distancia_sma_20",
                 "rsi_14",
                 "atr_percentual",
