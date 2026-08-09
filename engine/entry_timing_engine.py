@@ -125,6 +125,12 @@ MIN_TREND_QUALITY_FOR_ENTRY = 42.0
 MIN_TREND_QUALITY_FOR_BONUS = 72.0
 STRONG_TREND_QUALITY = 85.0
 
+# Teto operacional do timing por qualidade estrutural.
+# Tendência INSTÁVEL não é rejeitada, mas não pode receber
+# ENTRAR AGORA até a estrutura melhorar.
+MAX_TIMING_SCORE_UNSTABLE = 74.0
+MAX_TIMING_SCORE_WEAK = 59.0
+
 
 MINIMUM_REQUIRED_COLUMNS = {
     "ticker",
@@ -1796,11 +1802,40 @@ def calculate_entry_timing_score(
         elif trend_quality_score >= 72:
             base_score += 1.5
 
+    adjusted_score = clip_score(
+        base_score
+        -
+        penalty
+    )
+
+    # --------------------------------------------------------
+    # TETO POR QUALIDADE ESTRUTURAL
+    # --------------------------------------------------------
+    # Não rejeita automaticamente uma empresa com tendência
+    # instável. Apenas impede que o timing seja classificado
+    # como ENTRAR AGORA enquanto a estrutura estiver frágil.
+    trend_structure_quality = str(
+        row.get(
+            "trend_structure_quality",
+            "",
+        )
+    ).strip().upper()
+
+    if trend_structure_quality == "INSTÁVEL":
+        adjusted_score = min(
+            adjusted_score,
+            MAX_TIMING_SCORE_UNSTABLE,
+        )
+
+    elif trend_structure_quality == "FRACA":
+        adjusted_score = min(
+            adjusted_score,
+            MAX_TIMING_SCORE_WEAK,
+        )
+
     return round(
         clip_score(
-            base_score
-            -
-            penalty
+            adjusted_score
         ),
         2,
     )
@@ -2159,6 +2194,19 @@ def define_timing_status(
     ):
         return "AGUARDAR PULLBACK"
 
+    trend_structure_quality = str(
+        row.get(
+            "trend_structure_quality",
+            "",
+        )
+    ).strip().upper()
+
+    if (
+        trend_structure_quality == "INSTÁVEL"
+        and score >= 68
+    ):
+        return "PRÉ-ENTRADA"
+
     if (
         score >= 68
         and is_valid_number(
@@ -2462,6 +2510,18 @@ def list_timing_pending_conditions(
             "qualidade estrutural da tendência insuficiente"
         )
 
+    trend_structure_quality = str(
+        row.get(
+            "trend_structure_quality",
+            "",
+        )
+    ).strip().upper()
+
+    if trend_structure_quality == "INSTÁVEL":
+        pending.append(
+            "aguardar estabilização da estrutura da tendência"
+        )
+
     return "; ".join(
         dict.fromkeys(
             pending
@@ -2634,6 +2694,19 @@ def generate_timing_decision(
         )
 
     if status == "PRÉ-ENTRADA":
+
+        trend_structure_quality = str(
+            row.get(
+                "trend_structure_quality",
+                "",
+            )
+        ).strip().upper()
+
+        if trend_structure_quality == "INSTÁVEL":
+            return (
+                f"{ticker}: pré-entrada; estrutura ainda instável. "
+                f"Aguardar estabilização e novo gatilho."
+            )
 
         return (
             f"{ticker}: ponto próximo do ideal; "
