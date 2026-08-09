@@ -20,6 +20,10 @@
 # - Distâncias das médias e das máximas de 20 e 52 semanas
 # - Extensão de curto prazo e risco de movimento parabólico
 # - Volume relativo de 5 e 20 pregões
+# - Persistência acima das médias de 20, 50 e 200 dias
+# - Qualidade da tendência
+# - Distância do topo histórico (ATH)
+# - Score de liquidez institucional
 # ============================================================
 
 from __future__ import annotations
@@ -643,6 +647,128 @@ def calculate_rolling_vwap(
 
 
 # ============================================================
+# PERSISTÊNCIA E QUALIDADE DA TENDÊNCIA
+# ============================================================
+
+def rolling_persistence(
+    condition: pd.Series,
+    window: int,
+) -> pd.Series:
+    """
+    Percentual de pregões dentro de uma janela em que
+    determinada condição permaneceu verdadeira.
+    """
+
+    return (
+        condition
+        .astype(float)
+        .rolling(
+            window,
+            min_periods=max(5, window // 3),
+        )
+        .mean()
+        * 100
+    )
+
+
+def calculate_trend_quality(
+    df: pd.DataFrame,
+) -> pd.Series:
+    """
+    Classifica a qualidade da tendência para swing trade.
+
+    Retorna:
+    - TENDÊNCIA SAUDÁVEL
+    - TENDÊNCIA ACELERADA
+    - TENDÊNCIA FRACA
+    - TENDÊNCIA DE BAIXA
+    - TENDÊNCIA INDEFINIDA
+    """
+
+    result = []
+
+    for _, row in df.iterrows():
+
+        values = [
+            row.get("sma_20", np.nan),
+            row.get("sma_50", np.nan),
+            row.get("sma_200", np.nan),
+            row.get("close", np.nan),
+            row.get("adx_14", np.nan),
+            row.get("distancia_sma_20", np.nan),
+            row.get("sma_50_slope_20d", np.nan),
+            row.get("sma_200_slope_20d", np.nan),
+        ]
+
+        if not all(np.isfinite(v) for v in values):
+            result.append("TENDÊNCIA INDEFINIDA")
+            continue
+
+        sma20, sma50, sma200, close, adx, dist20, slope50, slope200 = values
+
+        bullish_structure = (
+            close > sma20 > sma50 > sma200
+            and slope50 > 0
+            and slope200 > 0
+        )
+
+        bearish_structure = (
+            close < sma50
+            and sma50 < sma200
+        )
+
+        if bullish_structure:
+            if (
+                dist20 >= 12
+                or (
+                    adx >= 35
+                    and dist20 >= 8
+                )
+            ):
+                result.append("TENDÊNCIA ACELERADA")
+            elif adx >= 15:
+                result.append("TENDÊNCIA SAUDÁVEL")
+            else:
+                result.append("TENDÊNCIA FRACA")
+
+        elif bearish_structure:
+            result.append("TENDÊNCIA DE BAIXA")
+
+        else:
+            result.append("TENDÊNCIA FRACA")
+
+    return pd.Series(
+        result,
+        index=df.index,
+        dtype="object",
+    )
+
+
+def calculate_liquidity_score(
+    average_dollar_volume: pd.Series,
+) -> pd.Series:
+    """
+    Score de liquidez institucional baseado no volume financeiro
+    médio de 20 pregões.
+    """
+
+    score = pd.Series(
+        20.0,
+        index=average_dollar_volume.index,
+        dtype=float,
+    )
+
+    score = score.mask(average_dollar_volume >= 20_000_000, 40.0)
+    score = score.mask(average_dollar_volume >= 50_000_000, 55.0)
+    score = score.mask(average_dollar_volume >= 100_000_000, 70.0)
+    score = score.mask(average_dollar_volume >= 200_000_000, 80.0)
+    score = score.mask(average_dollar_volume >= 500_000_000, 90.0)
+    score = score.mask(average_dollar_volume >= 1_000_000_000, 100.0)
+
+    return score
+
+
+# ============================================================
 # INDICADORES POR TICKER
 # ============================================================
 
@@ -701,6 +827,25 @@ def calculate_ticker_indicators(
         / df["sma_200"].shift(20)
         - 1
     ) * 100
+
+    # --------------------------------------------------------
+    # PERSISTÊNCIA ACIMA DAS MÉDIAS
+    # --------------------------------------------------------
+
+    df["persistencia_acima_sma20_30d"] = rolling_persistence(
+        close > df["sma_20"],
+        30,
+    )
+
+    df["persistencia_acima_sma50_60d"] = rolling_persistence(
+        close > df["sma_50"],
+        60,
+    )
+
+    df["persistencia_acima_sma200_120d"] = rolling_persistence(
+        close > df["sma_200"],
+        120,
+    )
 
     # --------------------------------------------------------
     # DISTÂNCIA DAS MÉDIAS
@@ -881,6 +1026,14 @@ def calculate_ticker_indicators(
         .mean()
     )
 
+    df["liquidity_score"] = calculate_liquidity_score(
+        df["average_dollar_volume_20d"]
+    )
+
+    df["score_liquidez_institucional"] = (
+        df["liquidity_score"]
+    )
+
     # --------------------------------------------------------
     # OBV
     # --------------------------------------------------------
@@ -1008,6 +1161,46 @@ def calculate_ticker_indicators(
 
     df["posicao_intervalo_52s"] = (
         df["position_in_52w_range"]
+    )
+
+    # --------------------------------------------------------
+    # TOPO HISTÓRICO (ATH)
+    # --------------------------------------------------------
+
+    df["all_time_high"] = high.expanding(
+        min_periods=1
+    ).max()
+
+    df["distance_from_ath"] = (
+        close / df["all_time_high"] - 1
+    ) * 100
+
+    df["distancia_ath"] = (
+        df["distance_from_ath"]
+    )
+
+    ath_flag = high.eq(
+        df["all_time_high"]
+    )
+
+    ath_index = pd.Series(
+        np.where(
+            ath_flag,
+            np.arange(len(df), dtype=float),
+            np.nan,
+        ),
+        index=df.index,
+        dtype=float,
+    ).ffill()
+
+    current_index = pd.Series(
+        np.arange(len(df), dtype=float),
+        index=df.index,
+        dtype=float,
+    )
+
+    df["days_since_ath"] = (
+        current_index - ath_index
     )
 
     # --------------------------------------------------------
@@ -1287,6 +1480,18 @@ def calculate_ticker_indicators(
     )
 
     # --------------------------------------------------------
+    # QUALIDADE DA TENDÊNCIA
+    # --------------------------------------------------------
+
+    df["trend_quality"] = calculate_trend_quality(
+        df
+    )
+
+    df["qualidade_tendencia"] = (
+        df["trend_quality"]
+    )
+
+    # --------------------------------------------------------
     # QUALIDADE DOS INDICADORES
     # --------------------------------------------------------
 
@@ -1308,6 +1513,11 @@ def calculate_ticker_indicators(
         "volume_relativo_20d",
         "distancia_maxima_20d",
         "distancia_maxima_52s",
+        "distancia_ath",
+        "persistencia_acima_sma20_30d",
+        "persistencia_acima_sma50_60d",
+        "persistencia_acima_sma200_120d",
+        "score_liquidez_institucional",
         "extension_score",
     ]
 
@@ -1608,6 +1818,12 @@ if __name__ == "__main__":
         "distancia_sma_20",
         "distancia_maxima_20d",
         "distancia_maxima_52s",
+        "distancia_ath",
+        "persistencia_acima_sma20_30d",
+        "persistencia_acima_sma50_60d",
+        "persistencia_acima_sma200_120d",
+        "qualidade_tendencia",
+        "score_liquidez_institucional",
         "volume_relativo_5d",
         "volume_relativo_20d",
         "weekly_extension_risk",
