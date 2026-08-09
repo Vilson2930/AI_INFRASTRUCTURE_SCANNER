@@ -10,7 +10,10 @@
 # - Score de desconto
 # - Score de momentum
 # - Score de tendência
-# - Score de volume e fluxo
+# - Persistência de tendência (SMA20/50/200)
+# - Qualidade da tendência
+# - Distância do ATH
+# - Score de volume, fluxo e liquidez institucional
 # - Score de risco
 # - Penalidades técnicas
 # - Classificação e diagnóstico
@@ -78,6 +81,12 @@ MINIMUM_REQUIRED_COLUMNS = {
     "obv",
     "obv_sma_20",
     "vwap_20",
+    "persistencia_acima_sma20_30d",
+    "persistencia_acima_sma50_60d",
+    "persistencia_acima_sma200_120d",
+    "qualidade_tendencia",
+    "distancia_ath",
+    "score_liquidez_institucional",
 }
 
 
@@ -205,6 +214,9 @@ def normalize_columns(
         "return_3m": "retorno_3m",
         "return_6m": "retorno_6m",
         "macd_hist_change": "macd_hist_variacao",
+        "distance_from_ath": "distancia_ath",
+        "trend_quality": "qualidade_tendencia",
+        "liquidity_score": "score_liquidez_institucional",
     }
 
     # Renomeação segura.
@@ -318,6 +330,11 @@ def validate_input(
         "obv",
         "obv_sma_20",
         "vwap_20",
+        "persistencia_acima_sma20_30d",
+        "persistencia_acima_sma50_60d",
+        "persistencia_acima_sma200_120d",
+        "distancia_ath",
+        "score_liquidez_institucional",
     ]
 
     for column in numeric_columns:
@@ -1066,11 +1083,118 @@ def score_adx_direction(
     )
 
 
+def score_trend_persistence(
+    value: float,
+) -> float:
+    """
+    Avalia a persistência da tendência.
+
+    O valor recebido representa o percentual de pregões
+    da janela em que o preço permaneceu acima da média.
+    """
+
+    if not is_valid_number(value):
+        return 35.0
+
+    value = float(value)
+
+    if value >= 85:
+        return 100.0
+
+    if value >= 70:
+        return 90.0
+
+    if value >= 55:
+        return 78.0
+
+    if value >= 40:
+        return 58.0
+
+    if value >= 25:
+        return 38.0
+
+    return 18.0
+
+
+def score_trend_quality_label(
+    value: object,
+) -> float:
+    """
+    Converte a classificação produzida pelo
+    technical_indicators.py em score quantitativo.
+    """
+
+    label = str(
+        value or ""
+    ).strip().upper()
+
+    mapping = {
+        "TENDÊNCIA SAUDÁVEL": 100.0,
+        "TENDÊNCIA ACELERADA": 78.0,
+        "TENDÊNCIA FRACA": 45.0,
+        "TENDÊNCIA DE BAIXA": 10.0,
+        "TENDÊNCIA INDEFINIDA": 30.0,
+    }
+
+    return mapping.get(
+        label,
+        30.0,
+    )
+
+
+def score_distance_from_ath(
+    value: float,
+) -> float:
+    """
+    Avalia a posição em relação ao topo histórico.
+
+    Para swing de até 6 meses, líderes próximos do ATH
+    recebem boa nota, mas uma ação exatamente esticada
+    no topo não recebe a nota máxima.
+    """
+
+    if not is_valid_number(value):
+        return 35.0
+
+    value = float(value)
+
+    if -10 <= value <= -2:
+        return 100.0
+
+    if -20 <= value < -10:
+        return 90.0
+
+    if -2 < value <= 0:
+        return 82.0
+
+    if -30 <= value < -20:
+        return 72.0
+
+    if -40 <= value < -30:
+        return 55.0
+
+    if -50 <= value < -40:
+        return 38.0
+
+    if value < -50:
+        return 18.0
+
+    return 25.0
+
+
 def calculate_trend_score(
     row: pd.Series,
 ) -> float:
     """
-    Calcula o score de tendência.
+    Calcula o score de tendência para swing de até 6 meses.
+
+    Agora combina:
+    - posição versus SMA20/50/200;
+    - estrutura das médias;
+    - ADX e direção;
+    - persistência acima das médias;
+    - qualidade da tendência;
+    - distância do ATH.
     """
 
     score = weighted_average_available(
@@ -1097,13 +1221,43 @@ def calculate_trend_score(
                 row.get("plus_di_14"),
                 row.get("minus_di_14"),
             ),
+            score_trend_persistence(
+                row.get(
+                    "persistencia_acima_sma20_30d"
+                )
+            ),
+            score_trend_persistence(
+                row.get(
+                    "persistencia_acima_sma50_60d"
+                )
+            ),
+            score_trend_persistence(
+                row.get(
+                    "persistencia_acima_sma200_120d"
+                )
+            ),
+            score_trend_quality_label(
+                row.get(
+                    "qualidade_tendencia"
+                )
+            ),
+            score_distance_from_ath(
+                row.get(
+                    "distancia_ath"
+                )
+            ),
         ],
         weights=[
+            0.10,
+            0.12,
+            0.13,
             0.15,
-            0.20,
-            0.25,
-            0.20,
-            0.20,
+            0.12,
+            0.10,
+            0.10,
+            0.05,
+            0.08,
+            0.05,
         ],
         fallback=40.0,
     )
@@ -1281,11 +1435,30 @@ def score_vwap_position(
     return 25.0
 
 
+def score_institutional_liquidity(
+    value: float,
+) -> float:
+    """
+    Usa o score de liquidez institucional já calculado
+    em technical_indicators.py.
+    """
+
+    if not is_valid_number(value):
+        return 35.0
+
+    return clip_score(
+        float(value)
+    )
+
+
 def calculate_volume_flow_score(
     row: pd.Series,
 ) -> float:
     """
-    Calcula o score de volume e fluxo.
+    Calcula o score de volume, fluxo e liquidez.
+
+    CMF e volume relativo permanecem os fatores principais.
+    A liquidez institucional entra como confirmação estrutural.
     """
 
     score = weighted_average_available(
@@ -1321,12 +1494,18 @@ def calculate_volume_flow_score(
                     "vwap_20"
                 ),
             ),
+            score_institutional_liquidity(
+                row.get(
+                    "score_liquidez_institucional"
+                )
+            ),
         ],
         weights=[
             0.25,
-            0.20,
-            0.20,
-            0.20,
+            0.15,
+            0.25,
+            0.10,
+            0.10,
             0.15,
         ],
         fallback=40.0,
@@ -1673,6 +1852,58 @@ def calculate_technical_penalties(
             "movimento de curto prazo esticado"
         )
 
+    trend_quality = str(
+        row.get(
+            "qualidade_tendencia",
+            "",
+        )
+    ).strip().upper()
+
+    persistence_50 = row.get(
+        "persistencia_acima_sma50_60d"
+    )
+
+    distance_ath = row.get(
+        "distancia_ath"
+    )
+
+    liquidity_score = row.get(
+        "score_liquidez_institucional"
+    )
+
+    if trend_quality == "TENDÊNCIA DE BAIXA":
+        penalty += 12
+        reasons.append(
+            "qualidade de tendência de baixa"
+        )
+
+    if (
+        is_valid_number(persistence_50)
+        and float(persistence_50) < 35
+    ):
+        penalty += 6
+        reasons.append(
+            "baixa persistência acima da SMA50"
+        )
+
+    if (
+        is_valid_number(distance_ath)
+        and float(distance_ath) < -55
+    ):
+        penalty += 5
+        reasons.append(
+            "muito distante do topo histórico"
+        )
+
+    if (
+        is_valid_number(liquidity_score)
+        and float(liquidity_score) < 40
+    ):
+        penalty += 5
+        reasons.append(
+            "liquidez institucional baixa"
+        )
+
     return (
         float(penalty),
         "; ".join(reasons),
@@ -1766,7 +1997,10 @@ def trend_confirmation(
     row: pd.Series,
 ) -> bool:
     """
-    Confirma tendência minimamente favorável.
+    Confirma tendência favorável para swing de até 6 meses.
+
+    Além da estrutura de preço, exige persistência mínima
+    e evita aprovar tendências classificadas como baixa.
     """
 
     close = row.get(
@@ -1789,6 +2023,17 @@ def trend_confirmation(
         "minus_di_14"
     )
 
+    persistence_50 = row.get(
+        "persistencia_acima_sma50_60d"
+    )
+
+    trend_quality = str(
+        row.get(
+            "qualidade_tendencia",
+            "",
+        )
+    ).strip().upper()
+
     price_above_sma_200 = (
         is_valid_number(close)
         and is_valid_number(sma_200)
@@ -1808,10 +2053,23 @@ def trend_confirmation(
         and float(plus_di) >= float(minus_di)
     )
 
+    persistence_ok = (
+        is_valid_number(persistence_50)
+        and float(persistence_50) >= 50
+    )
+
+    quality_ok = trend_quality in {
+        "TENDÊNCIA SAUDÁVEL",
+        "TENDÊNCIA ACELERADA",
+        "TENDÊNCIA FRACA",
+    }
+
     return bool(
         price_above_sma_200
         and price_near_sma_50
         and directional_positive
+        and persistence_ok
+        and quality_ok
     )
 
 
@@ -1820,6 +2078,9 @@ def volume_confirmation(
 ) -> bool:
     """
     Confirma fluxo de capital suficiente.
+
+    Exige pelo menos duas confirmações entre volume relativo,
+    CMF, OBV e VWAP, além de liquidez institucional mínima.
     """
 
     relative_volume = row.get(
@@ -1846,6 +2107,10 @@ def volume_confirmation(
         "vwap_20"
     )
 
+    liquidity_score = row.get(
+        "score_liquidez_institucional"
+    )
+
     relative_volume_ok = (
         is_valid_number(relative_volume)
         and float(relative_volume) >= 0.80
@@ -1868,6 +2133,11 @@ def volume_confirmation(
         and float(close) > float(vwap)
     )
 
+    liquidity_ok = (
+        is_valid_number(liquidity_score)
+        and float(liquidity_score) >= 55
+    )
+
     confirmations = sum(
         [
             relative_volume_ok,
@@ -1877,7 +2147,10 @@ def volume_confirmation(
         ]
     )
 
-    return confirmations >= 2
+    return bool(
+        confirmations >= 2
+        and liquidity_ok
+    )
 
 
 def risk_confirmation(
@@ -2123,6 +2396,42 @@ def list_positive_factors(
             "volume confirmado"
         )
 
+    persistence_50 = row.get(
+        "persistencia_acima_sma50_60d"
+    )
+
+    if (
+        is_valid_number(persistence_50)
+        and float(persistence_50) >= 70
+    ):
+        factors.append(
+            "tendência persistente"
+        )
+
+    trend_quality = str(
+        row.get(
+            "qualidade_tendencia",
+            "",
+        )
+    ).strip().upper()
+
+    if trend_quality == "TENDÊNCIA SAUDÁVEL":
+        factors.append(
+            "qualidade de tendência saudável"
+        )
+
+    liquidity_score = row.get(
+        "score_liquidez_institucional"
+    )
+
+    if (
+        is_valid_number(liquidity_score)
+        and float(liquidity_score) >= 80
+    ):
+        factors.append(
+            "liquidez institucional elevada"
+        )
+
     return "; ".join(
         factors
     )
@@ -2192,6 +2501,33 @@ def list_pending_conditions(
     ):
         pending.append(
             "risco técnico elevado"
+        )
+
+    persistence_50 = row.get(
+        "persistencia_acima_sma50_60d"
+    )
+
+    if (
+        not is_valid_number(persistence_50)
+        or float(persistence_50) < 50
+    ):
+        pending.append(
+            "persistência de tendência insuficiente"
+        )
+
+    trend_quality = str(
+        row.get(
+            "qualidade_tendencia",
+            "",
+        )
+    ).strip().upper()
+
+    if trend_quality in {
+        "TENDÊNCIA DE BAIXA",
+        "TENDÊNCIA INDEFINIDA",
+    }:
+        pending.append(
+            "qualidade de tendência insuficiente"
         )
 
     penalty_reasons = row.get(
@@ -2603,11 +2939,13 @@ class TechnicalScore:
                 [
                     "technical_entry_approved",
                     "technical_entry_score",
+                    "score_trend",
                     "score_volume_flow",
                     "score_momentum",
-                    "score_trend",
+                    "persistencia_acima_sma50_60d",
                 ],
                 ascending=[
+                    False,
                     False,
                     False,
                     False,
@@ -2811,6 +3149,12 @@ class TechnicalScore:
                 "adx_14",
                 "atr_percentual",
                 "distancia_maxima_52s",
+                "distancia_ath",
+                "persistencia_acima_sma20_30d",
+                "persistencia_acima_sma50_60d",
+                "persistencia_acima_sma200_120d",
+                "qualidade_tendencia",
+                "score_liquidez_institucional",
                 "volume_relativo_20d",
                 "technical_penalty_reasons",
             ]
@@ -2905,6 +3249,10 @@ if __name__ == "__main__":
         "technical_classification",
         "technical_diagnosis",
         "distancia_maxima_52s",
+        "distancia_ath",
+        "persistencia_acima_sma50_60d",
+        "qualidade_tendencia",
+        "score_liquidez_institucional",
         "rsi_14",
         "macd_hist",
         "volume_relativo_20d",
