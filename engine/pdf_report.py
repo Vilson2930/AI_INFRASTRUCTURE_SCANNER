@@ -685,14 +685,64 @@ def bloco_empresa(row):
         ],
     )
 
-    extensao = obter(
+    # --------------------------------------------------------
+    # RISCO DE EXTENSÃO
+    # --------------------------------------------------------
+    # O Signal Engine preserva métricas do Entry Timing como
+    # parabolic_risk, pullback_probability e flags de extensão.
+    # O relatório transforma essas métricas em uma leitura executiva.
+    parabolic_risk = texto_seguro(
+        obter(
+            row,
+            ["parabolic_risk"],
+            "N/A",
+        )
+    ).upper()
+
+    pullback_probability = obter(
         row,
-        [
-            "extension_risk",
-            "risco_extensao",
-            "overextension",
-        ],
+        ["pullback_probability"],
+        "N/A",
     )
+
+    weekly_extension = obter(
+        row,
+        ["weekly_extension_risk"],
+        False,
+    )
+
+    parabolic_move = obter(
+        row,
+        ["parabolic_move_risk"],
+        False,
+    )
+
+    pullback_required = obter(
+        row,
+        ["pullback_required"],
+        False,
+    )
+
+    def _bool_local(valor):
+        if isinstance(valor, bool):
+            return valor
+        return str(valor).strip().lower() in {
+            "true", "1", "yes", "sim", "verdadeiro"
+        }
+
+    if (
+        parabolic_risk in {"ALTO", "EXTREMO"}
+        or _bool_local(weekly_extension)
+        or _bool_local(parabolic_move)
+        or _bool_local(pullback_required)
+    ):
+        extensao = "ELEVADO"
+    elif parabolic_risk == "MÉDIO" or parabolic_risk == "MEDIO":
+        extensao = "MODERADO"
+    elif parabolic_risk == "BAIXO":
+        extensao = "BAIXO"
+    else:
+        extensao = "NÃO DEFINIDO"
 
     preco = obter(
         row,
@@ -716,6 +766,18 @@ def bloco_empresa(row):
         ["Risk / Reward", numero(rr)],
         ["Tendência", texto_seguro(tendencia)],
         ["Risco de Extensão", texto_seguro(extensao)],
+        ["Risco Parabólico", texto_seguro(parabolic_risk)],
+        ["Risco de Pullback", percentual(pullback_probability)],
+        [
+            "Decisão Executiva",
+            texto_seguro(
+                obter(
+                    row,
+                    ["executive_decision"],
+                    "N/A",
+                )
+            ),
+        ],
     ]
 
     bloco = [
@@ -769,6 +831,11 @@ O horizonte operacional do scanner é swing trade de até
 aproximadamente seis meses. As classificações representam
 condições quantitativas observadas no momento da execução e
 não constituem garantia de retorno futuro.
+
+A Prioridade Operacional não é uma simples ordenação por Score Final.
+O Signal Engine prioriza primeiro a condição de execução
+(Entrada Forte, Entrada Aprovada, Pré-Entrada e estados de espera)
+e depois utiliza força do sinal, score final e timing para desempate.
 """
 
     return [
@@ -949,6 +1016,11 @@ def gerar_pdf_institucional():
         == "AGUARDAR PULLBACK"
     ]
 
+    aguardar_rompimento = base[
+        base["_classificacao_pdf"]
+        == "AGUARDAR ROMPIMENTO"
+    ]
+
     # --------------------------------------------------------
     # DOCUMENTO
     # --------------------------------------------------------
@@ -1068,6 +1140,10 @@ def gerar_pdf_institucional():
             "Aguardar pullback",
             len(aguardar_pullback),
         ),
+        (
+            "Aguardar rompimento",
+            len(aguardar_rompimento),
+        ),
     ]
 
     story.append(
@@ -1094,13 +1170,13 @@ def gerar_pdf_institucional():
 
     resumo = (
         f"O scanner analisou {len(base)} empresas. "
-        f"Foram identificadas {len(fortes)} entradas fortes, "
-        f"{len(aprovadas)} entradas aprovadas e "
-        f"{len(pre_entradas)} pré-entradas. "
-        f"{len(aguardar_volume)} empresas aguardam confirmação "
-        f"de volume, {len(aguardar_gatilho)} aguardam gatilho e "
-        f"{len(aguardar_pullback)} apresentam condição de "
-        f"aguardar pullback."
+        f"Foram identificadas {len(fortes)} entrada(s) forte(s), "
+        f"{len(aprovadas)} entrada(s) aprovada(s) e "
+        f"{len(pre_entradas)} pré-entrada(s) genérica(s). "
+        f"{len(aguardar_volume)} empresa(s) aguardam confirmação "
+        f"de volume, {len(aguardar_gatilho)} aguardam gatilho, "
+        f"{len(aguardar_pullback)} aguardam pullback e "
+        f"{len(aguardar_rompimento)} aguardam rompimento confirmado."
     )
 
     story.append(
@@ -1176,15 +1252,16 @@ def gerar_pdf_institucional():
 
     story.append(
         Paragraph(
-            "Top 20 — Ranking Institucional",
+            "Top 20 — Prioridade Operacional",
             STYLE_SECTION,
         )
     )
 
     story.append(
         Paragraph(
-            "Ranking consolidado das melhores oportunidades "
-            "identificadas pelo motor.",
+            "Lista ordenada pela prioridade operacional definida pelo Signal Engine. "
+            "A ordem considera o status de execução e a força do sinal; por isso, "
+            "não corresponde necessariamente à ordem decrescente do Score Final.",
             STYLE_BODY,
         )
     )
@@ -1315,6 +1392,35 @@ def gerar_pdf_institucional():
         story.append(
             tabela_oportunidades(
                 aguardar_pullback,
+                limite=20,
+            )
+        )
+
+    # ========================================================
+    # AGUARDAR ROMPIMENTO
+    # ========================================================
+
+    story.append(
+        Paragraph(
+            "Aguardar Rompimento",
+            STYLE_SECTION,
+        )
+    )
+
+    if aguardar_rompimento.empty:
+
+        story.append(
+            Paragraph(
+                "Nenhuma empresa nesta classificação.",
+                STYLE_BODY,
+            )
+        )
+
+    else:
+
+        story.append(
+            tabela_oportunidades(
+                aguardar_rompimento,
                 limite=20,
             )
         )
