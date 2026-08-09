@@ -1,6 +1,7 @@
 name: AI Infrastructure Scanner
 
 on:
+
   # Permite executar manualmente pela aba Actions
   workflow_dispatch:
 
@@ -14,11 +15,13 @@ permissions:
 
 jobs:
   run-scanner:
+
     name: Executar Scanner
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
+
       # ------------------------------------------------------
       # 1. BAIXAR O REPOSITÓRIO
       # ------------------------------------------------------
@@ -43,18 +46,19 @@ jobs:
           pip install -r requirements.txt
 
       # ------------------------------------------------------
-      # 4. CRIAR PASTA DE RESULTADOS
+      # 4. PREPARAR PASTAS
       # ------------------------------------------------------
-      - name: Preparar pasta data
+      - name: Preparar pastas
         run: |
           mkdir -p data
+          mkdir -p reports
 
       # ------------------------------------------------------
       # 5. VERIFICAR SINTAXE DOS ARQUIVOS
       # ------------------------------------------------------
       - name: Verificar código Python
         run: |
-          python -m compileall config engine main.py app.py
+          python -m compileall config engine main.py app.py send_email.py
 
       # ------------------------------------------------------
       # 6. EXECUTAR O SCANNER
@@ -64,24 +68,61 @@ jobs:
           python main.py
 
       # ------------------------------------------------------
-      # 7. MOSTRAR ARQUIVOS GERADOS
+      # 7. GERAR RELATÓRIO PDF
+      # ------------------------------------------------------
+      - name: Gerar relatório institucional PDF
+        timeout-minutes: 3
+        run: |
+          python -c "from engine.pdf_report import gerar_pdf_institucional; gerar_pdf_institucional()"
+
+      # ------------------------------------------------------
+      # 8. VERIFICAR PDF
+      # ------------------------------------------------------
+      - name: Verificar relatório PDF
+        run: |
+          echo "Arquivos em reports:"
+          ls -lah reports
+
+          test -f reports/relatorio_ai_infrastructure_scanner.pdf
+
+      # ------------------------------------------------------
+      # 9. ENVIAR RELATÓRIO POR E-MAIL
+      # ------------------------------------------------------
+      - name: Enviar relatório por e-mail
+        if: success()
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: |
+          python send_email.py
+
+      # ------------------------------------------------------
+      # 10. MOSTRAR ARQUIVOS GERADOS
       # ------------------------------------------------------
       - name: Listar resultados
         if: always()
         run: |
-          echo "Arquivos encontrados:"
+          echo "Arquivos encontrados em data:"
           find data -maxdepth 2 -type f -print || true
 
+          echo ""
+          echo "Arquivos encontrados em reports:"
+          find reports -maxdepth 2 -type f -print || true
+
       # ------------------------------------------------------
-      # 8. DISPONIBILIZAR OS RESULTADOS PARA DOWNLOAD
+      # 11. DISPONIBILIZAR RESULTADOS PARA DOWNLOAD
       # ------------------------------------------------------
       - name: Publicar resultados
-        if: success()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ai-infrastructure-scanner-results
           path: |
             data/*.csv
             data/*.xlsx
-          if-no-files-found: error
+            reports/*.pdf
+          if-no-files-found: warn
           retention-days: 30
