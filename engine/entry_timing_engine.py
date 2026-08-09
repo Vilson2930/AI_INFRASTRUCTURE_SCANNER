@@ -40,6 +40,11 @@
 # - parabolic_move_risk
 # - pullback_required
 # - extension_score
+# - trend_quality_score
+# - trend_structure_quality
+# - candle_stability_score
+# - pullback_quality_score
+# - volatility_expansion_score
 #
 # Saídas principais:
 # - entry_timing_score
@@ -50,6 +55,7 @@
 # - acceleration_factor_10d
 # - explosion_score
 # - extension_quality
+# - trend_structure_timing_score
 # - timing_confidence
 # - timing_approved
 # - timing_positive_factors
@@ -114,6 +120,10 @@ EXTREME_ACCELERATION_5D = 3.50
 
 STRONG_ACCELERATION_10D = 3.50
 EXTREME_ACCELERATION_10D = 5.00
+
+MIN_TREND_QUALITY_FOR_ENTRY = 42.0
+MIN_TREND_QUALITY_FOR_BONUS = 72.0
+STRONG_TREND_QUALITY = 85.0
 
 
 MINIMUM_REQUIRED_COLUMNS = {
@@ -416,6 +426,10 @@ def validate_input(
         "volume_relativo_20d",
         "cmf_20",
         "extension_score",
+        "trend_quality_score",
+        "candle_stability_score",
+        "pullback_quality_score",
+        "volatility_expansion_score",
     ]
 
     for column in numeric_columns:
@@ -1441,6 +1455,75 @@ def count_timing_confirmations(
     return confirmations
 
 
+def score_structural_trend_for_timing(
+    trend_quality_score: float,
+    candle_stability_score: float,
+    pullback_quality_score: float,
+    volatility_expansion_score: float,
+) -> float:
+    """
+    Converte a qualidade estrutural da tendência em score de timing.
+
+    A função usa principalmente trend_quality_score, mas confirma
+    a leitura com estabilidade dos candles, qualidade do pullback
+    e expansão de volatilidade.
+
+    Objetivo:
+    - premiar tendências limpas e sustentáveis;
+    - não punir excessivamente tendências apenas moderadas;
+    - penalizar estruturas instáveis.
+    """
+
+    values: list[float] = []
+    weights: list[float] = []
+
+    if is_valid_number(trend_quality_score):
+        values.append(
+            clip_score(
+                float(trend_quality_score)
+            )
+        )
+        weights.append(0.55)
+
+    if is_valid_number(candle_stability_score):
+        values.append(
+            clip_score(
+                float(candle_stability_score)
+            )
+        )
+        weights.append(0.20)
+
+    if is_valid_number(pullback_quality_score):
+        values.append(
+            clip_score(
+                float(pullback_quality_score)
+            )
+        )
+        weights.append(0.15)
+
+    if is_valid_number(volatility_expansion_score):
+        values.append(
+            clip_score(
+                100.0
+                -
+                float(volatility_expansion_score)
+            )
+        )
+        weights.append(0.10)
+
+    if not values:
+        return 50.0
+
+    return round(
+        weighted_average_available(
+            values=values,
+            weights=weights,
+            fallback=50.0,
+        ),
+        2,
+    )
+
+
 # ============================================================
 # SCORE FINAL DE TIMING
 # ============================================================
@@ -1515,6 +1598,27 @@ def calculate_entry_timing_score(
         else 50.0
     )
 
+    structural_timing_score = (
+        score_structural_trend_for_timing(
+            trend_quality_score=row.get(
+                "trend_quality_score",
+                np.nan,
+            ),
+            candle_stability_score=row.get(
+                "candle_stability_score",
+                np.nan,
+            ),
+            pullback_quality_score=row.get(
+                "pullback_quality_score",
+                np.nan,
+            ),
+            volatility_expansion_score=row.get(
+                "volatility_expansion_score",
+                np.nan,
+            ),
+        )
+    )
+
     base_score = weighted_average_available(
         values=[
             # extensão / aceleração
@@ -1579,21 +1683,25 @@ def calculate_entry_timing_score(
                 ),
             ),
 
+            # qualidade estrutural da tendência
+            structural_timing_score,
+
             # risco
             score_risk_timing(
                 atr
             ),
         ],
         weights=[
-            0.12,
-            0.08,
-            0.20,
-            0.12,
-            0.08,
             0.10,
-            0.08,
             0.07,
-            0.08,
+            0.17,
+            0.10,
+            0.07,
+            0.09,
+            0.07,
+            0.06,
+            0.07,
+            0.13,
             0.07,
         ],
         fallback=40.0,
@@ -1664,6 +1772,30 @@ def calculate_entry_timing_score(
     ):
         penalty += 8
 
+    trend_quality_score = row.get(
+        "trend_quality_score",
+        np.nan,
+    )
+
+    if is_valid_number(
+        trend_quality_score
+    ):
+        trend_quality_score = float(
+            trend_quality_score
+        )
+
+        if trend_quality_score < 42:
+            penalty += 12
+
+        elif trend_quality_score < 58:
+            penalty += 6
+
+        elif trend_quality_score >= 85:
+            base_score += 3
+
+        elif trend_quality_score >= 72:
+            base_score += 1.5
+
     return round(
         clip_score(
             base_score
@@ -1692,6 +1824,7 @@ def calculate_timing_confidence(
         "adx_14",
         "atr_percentual",
         "volume_relativo_20d",
+        "trend_quality_score",
     ]
 
     valid_count = sum(
@@ -1793,6 +1926,11 @@ def timing_risk_is_acceptable(
         np.nan,
     )
 
+    trend_quality_score = row.get(
+        "trend_quality_score",
+        np.nan,
+    )
+
     checks = [
         (
             not is_valid_number(
@@ -1877,6 +2015,17 @@ def timing_risk_is_acceptable(
             )
             <
             MAX_ACCEPTABLE_EXPLOSION_SCORE
+        ),
+
+        (
+            not is_valid_number(
+                trend_quality_score
+            )
+            or float(
+                trend_quality_score
+            )
+            >=
+            MIN_TREND_QUALITY_FOR_ENTRY
         ),
     ]
 
@@ -2165,6 +2314,27 @@ def list_timing_positive_factors(
             "baixo risco parabólico"
         )
 
+    trend_quality_score = row.get(
+        "trend_quality_score",
+        np.nan,
+    )
+
+    if (
+        is_valid_number(trend_quality_score)
+        and float(trend_quality_score) >= 72
+    ):
+        factors.append(
+            "qualidade estrutural da tendência favorável"
+        )
+
+    if (
+        is_valid_number(trend_quality_score)
+        and float(trend_quality_score) >= 85
+    ):
+        factors.append(
+            "tendência estrutural excelente"
+        )
+
     return "; ".join(
         factors
     )
@@ -2277,6 +2447,19 @@ def list_timing_pending_conditions(
     ):
         pending.append(
             "aguardar redução da extensão do preço"
+        )
+
+    trend_quality_score = row.get(
+        "trend_quality_score",
+        np.nan,
+    )
+
+    if (
+        is_valid_number(trend_quality_score)
+        and float(trend_quality_score) < 58
+    ):
+        pending.append(
+            "qualidade estrutural da tendência insuficiente"
         )
 
     return "; ".join(
@@ -2393,6 +2576,19 @@ def list_timing_rejection_reasons(
     ):
         reasons.append(
             "movimento explosivo"
+        )
+
+    trend_quality_score = row.get(
+        "trend_quality_score",
+        np.nan,
+    )
+
+    if (
+        is_valid_number(trend_quality_score)
+        and float(trend_quality_score) < 42
+    ):
+        reasons.append(
+            "estrutura de tendência fraca"
         )
 
     return "; ".join(
@@ -2568,6 +2764,31 @@ class EntryTimingEngine:
             "explosion_score"
         ] = latest.apply(
             calculate_explosion_score,
+            axis=1,
+        )
+
+        latest[
+            "trend_structure_timing_score"
+        ] = latest.apply(
+            lambda row:
+                score_structural_trend_for_timing(
+                    trend_quality_score=row.get(
+                        "trend_quality_score",
+                        np.nan,
+                    ),
+                    candle_stability_score=row.get(
+                        "candle_stability_score",
+                        np.nan,
+                    ),
+                    pullback_quality_score=row.get(
+                        "pullback_quality_score",
+                        np.nan,
+                    ),
+                    volatility_expansion_score=row.get(
+                        "volatility_expansion_score",
+                        np.nan,
+                    ),
+                ),
             axis=1,
         )
 
@@ -2884,6 +3105,12 @@ class EntryTimingEngine:
                 "acceleration_factor_10d",
                 "explosion_score",
                 "extension_quality",
+                "trend_quality_score",
+                "trend_structure_quality",
+                "trend_structure_timing_score",
+                "candle_stability_score",
+                "pullback_quality_score",
+                "volatility_expansion_score",
                 "distancia_sma_20",
                 "rsi_14",
                 "atr_percentual",
