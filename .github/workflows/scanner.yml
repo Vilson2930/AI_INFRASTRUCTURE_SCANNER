@@ -52,23 +52,195 @@ jobs:
         run: |
           mkdir -p data
           mkdir -p reports
+          mkdir -p outputs
 
       # ------------------------------------------------------
       # 5. VERIFICAR SINTAXE DOS ARQUIVOS
       # ------------------------------------------------------
       - name: Verificar código Python
         run: |
-          python -m compileall config engine main.py app.py send_email.py
+          python -m compileall config engine main.py app.py send_email.py agent_export.py
 
       # ------------------------------------------------------
       # 6. EXECUTAR O SCANNER
+      #
+      # main.py executa run_scanner() e envia o resultado
+      # para agent_export.py.
       # ------------------------------------------------------
       - name: Executar scanner
         run: |
           python main.py
 
       # ------------------------------------------------------
-      # 7. GERAR RELATÓRIO PDF
+      # 7. VALIDAR OUTPUT PARA INVESTMENT CIO
+      # ------------------------------------------------------
+      - name: Validar output do Investment CIO
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("outputs/agent_output_raw.json")
+
+          if not path.exists():
+              raise FileNotFoundError(
+                  "outputs/agent_output_raw.json não foi criado."
+              )
+
+          if path.stat().st_size == 0:
+              raise RuntimeError(
+                  "outputs/agent_output_raw.json está vazio."
+              )
+
+          with path.open(
+              "r",
+              encoding="utf-8"
+          ) as file:
+              payload = json.load(file)
+
+          if not isinstance(payload, dict):
+              raise RuntimeError(
+                  "O arquivo não contém um objeto JSON válido."
+              )
+
+          expected_source = "AI_INFRASTRUCTURE_SCANNER"
+
+          source_system = payload.get("source_system")
+
+          if source_system != expected_source:
+              raise RuntimeError(
+                  f"source_system incorreto: {source_system!r}. "
+                  f"Esperado: {expected_source!r}."
+              )
+
+          required_keys = [
+              "source_system",
+              "export_version",
+              "generated_at",
+              "summary",
+              "engine",
+              "ranking",
+              "executive_ranking",
+              "approved_entries",
+              "watchlist",
+              "best_by_sector",
+              "metadata",
+          ]
+
+          missing_keys = [
+              key
+              for key in required_keys
+              if key not in payload
+          ]
+
+          if missing_keys:
+              raise RuntimeError(
+                  "Campos obrigatórios ausentes: "
+                  + ", ".join(missing_keys)
+              )
+
+          summary = payload.get("summary") or {}
+
+          ranking = payload.get("ranking") or []
+          executive_ranking = (
+              payload.get("executive_ranking") or []
+          )
+          approved_entries = (
+              payload.get("approved_entries") or []
+          )
+          watchlist = (
+              payload.get("watchlist") or []
+          )
+          best_by_sector = (
+              payload.get("best_by_sector") or []
+          )
+
+          if not isinstance(ranking, list):
+              raise RuntimeError(
+                  "'ranking' deve ser uma lista."
+              )
+
+          if not isinstance(executive_ranking, list):
+              raise RuntimeError(
+                  "'executive_ranking' deve ser uma lista."
+              )
+
+          print("=" * 80)
+          print("AI INFRASTRUCTURE SCANNER")
+          print("OUTPUT PARA INVESTMENT CIO")
+          print("=" * 80)
+
+          print(
+              f"source_system: "
+              f"{source_system}"
+          )
+
+          print(
+              f"export_version: "
+              f"{payload.get('export_version')}"
+          )
+
+          print(
+              f"generated_at: "
+              f"{payload.get('generated_at')}"
+          )
+
+          print(
+              f"Ranking: "
+              f"{len(ranking)} registros"
+          )
+
+          print(
+              f"Ranking executivo: "
+              f"{len(executive_ranking)} registros"
+          )
+
+          print(
+              f"Entradas aprovadas: "
+              f"{len(approved_entries)}"
+          )
+
+          print(
+              f"Watchlist: "
+              f"{len(watchlist)}"
+          )
+
+          print(
+              f"Melhores por setor: "
+              f"{len(best_by_sector)}"
+          )
+
+          print(
+              "Sinais: "
+              f"{summary.get('signal_counts')}"
+          )
+
+          print(
+              "Decisões executivas: "
+              f"{summary.get('executive_decision_counts')}"
+          )
+
+          print("=" * 80)
+          print(
+              "agent_output_raw.json "
+              "VALIDADO COM SUCESSO"
+          )
+          print("=" * 80)
+          PY
+
+      # ------------------------------------------------------
+      # 8. PUBLICAR OUTPUT PARA INVESTMENT CIO
+      # ------------------------------------------------------
+      - name: Publicar output para Investment CIO
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-infrastructure-agent-output
+          path: outputs/agent_output_raw.json
+          if-no-files-found: error
+          retention-days: 30
+
+      # ------------------------------------------------------
+      # 9. GERAR RELATÓRIO PDF
       # ------------------------------------------------------
       - name: Gerar relatório institucional PDF
         timeout-minutes: 3
@@ -76,7 +248,7 @@ jobs:
           python -c "from engine.pdf_report import gerar_pdf_institucional; gerar_pdf_institucional()"
 
       # ------------------------------------------------------
-      # 8. VERIFICAR PDF
+      # 10. VERIFICAR PDF
       # ------------------------------------------------------
       - name: Verificar relatório PDF
         run: |
@@ -86,7 +258,7 @@ jobs:
           test -f reports/relatorio_ai_infrastructure_scanner.pdf
 
       # ------------------------------------------------------
-      # 9. ENVIAR RELATÓRIO POR E-MAIL
+      # 11. ENVIAR RELATÓRIO POR E-MAIL
       # ------------------------------------------------------
       - name: Enviar relatório por e-mail
         if: success()
@@ -100,7 +272,7 @@ jobs:
           python send_email.py
 
       # ------------------------------------------------------
-      # 10. MOSTRAR ARQUIVOS GERADOS
+      # 12. MOSTRAR ARQUIVOS GERADOS
       # ------------------------------------------------------
       - name: Listar resultados
         if: always()
@@ -112,8 +284,12 @@ jobs:
           echo "Arquivos encontrados em reports:"
           find reports -maxdepth 2 -type f -print || true
 
+          echo ""
+          echo "Arquivos encontrados em outputs:"
+          find outputs -maxdepth 2 -type f -print || true
+
       # ------------------------------------------------------
-      # 11. DISPONIBILIZAR RESULTADOS PARA DOWNLOAD
+      # 13. DISPONIBILIZAR RESULTADOS NORMAIS
       # ------------------------------------------------------
       - name: Publicar resultados
         if: always()
