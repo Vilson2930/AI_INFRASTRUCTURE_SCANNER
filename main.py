@@ -42,6 +42,7 @@ from engine.entry_timing_engine import EntryTimingEngine
 from engine.signal_engine import SignalEngine
 from engine.ranking_engine import RankingEngine
 from engine.report import ReportEngine
+from agent_export import export_agent_output
 
 
 # ============================================================
@@ -792,7 +793,11 @@ def main() -> int:
 
     try:
 
-        run_scanner()
+        results = run_scanner()
+
+        export_agent_output(
+            results
+        )
 
         return 0
 
